@@ -10,8 +10,10 @@ from appstore_mcp.apple.fetch import USER_AGENT
 from appstore_mcp.apple.ids import parse_app_ref
 from appstore_mcp.apple.itunes import LOOKUP_URL, SEARCH_URL, SOURCE_NAME, ITunesClient
 from appstore_mcp.apple.normalize import profile_from_lookup, search_result_from_lookup
-from appstore_mcp.errors import AppNotFoundError, InvalidInputError
+from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
 from appstore_mcp.models import (
+    AppError,
+    CompareAppsResult,
     GetAppResult,
     Meta,
     SearchAppsResult,
@@ -128,6 +130,87 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             app=profile,
             sources=[Source(name=SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)],
             raw={"itunes_lookup": item} if include_raw else None,
+        )
+
+    @mcp.tool(
+        annotations={
+            "title": "Compare App Store apps",
+            "readOnlyHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def compare_app_store_apps(
+        apps: list[str],
+        country: str = DEFAULT_COUNTRY,
+    ) -> CompareAppsResult:
+        """Fetch full profiles for multiple apps (IDs or apps.apple.com URLs) in
+        one batch for side-by-side competitor comparison. Returns the profiles
+        plus per-app errors; apps that fail do not fail the whole call."""
+        country = _validate_country(country)
+        if not apps:
+            raise InvalidInputError("Pass at least one app ID or App Store URL in `apps`.")
+
+        errors: list[AppError] = []
+        ordered_ids: list[str] = []
+        for value in apps:
+            try:
+                ref = parse_app_ref(value)
+            except InvalidInputError as exc:
+                errors.append(AppError(app=value, reason=str(exc)))
+                continue
+            if ref.app_id not in ordered_ids:
+                ordered_ids.append(ref.app_id)
+
+        if not ordered_ids:
+            raise InvalidInputError(
+                "None of the provided values could be parsed as an app ID or "
+                "App Store URL."
+            )
+
+        entry = await itunes.lookup(ordered_ids, country=country)
+        by_id = {
+            str(item.get("trackId")): item
+            for item in entry.value.get("results", [])
+        }
+        profiles = []
+        for app_id in ordered_ids:
+            item = by_id.get(app_id)
+            if item is None:
+                errors.append(
+                    AppError(
+                        app=app_id,
+                        reason=f"not found in storefront '{country}' - it may "
+                        f"exist in another country",
+                    )
+                )
+                continue
+            profiles.append(profile_from_lookup(item))
+
+        if not profiles:
+            raise AppStoreMCPError(
+                f"None of the requested apps could be fetched in storefront "
+                f"'{country}': "
+                + "; ".join(f"{e.app}: {e.reason}" for e in errors)
+            )
+
+        warnings = (
+            [f"{len(errors)} of {len(apps)} requested apps could not be fetched; see errors"]
+            if errors
+            else []
+        )
+        url = str(
+            httpx.URL(LOOKUP_URL, params={"id": ",".join(ordered_ids), "country": country})
+        )
+        return CompareAppsResult(
+            meta=Meta(
+                country=country,
+                retrieved_at=entry.retrieved_at,
+                fresh=entry.fresh,
+                warnings=warnings,
+            ),
+            apps=profiles,
+            errors=errors,
+            sources=[Source(name=SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)],
         )
 
     return mcp
