@@ -156,10 +156,21 @@ Two schemas:
 
 ### Caching & politeness
 - In-memory async-safe TTL cache (~15 min), keyed `(endpoint, id/query, country)`,
-  across all sources. Kills agent-loop refetches; no disk, no Redis.
+  across all sources. Kills agent-loop refetches; no disk, no Redis — File
+  storage would only help across client restarts within one session, and the
+  cost of a cold-start refetch (one cheap, unauthenticated public GET, well
+  inside Apple's real-world rate headroom) doesn't justify the filesystem/
+  locking complexity, nor the risk of a stale on-disk cache reporting
+  `meta.fresh=False` for a brand-new process, for that narrow case.
 - No proactive throttle. Apple 403/429 → structured "rate limited, retry shortly"
   error. Honest `User-Agent` identifying the tool. `meta.retrieved_at` = actual
   fetch time; `meta.fresh = False` on cache hits.
+- `cache.py`'s `TTLCache` periodically sweeps expired entries (throttled to
+  once per TTL window) so long-lived stdio sessions touching many distinct
+  keys don't grow unbounded, and single-flights concurrent `get_or_fetch`
+  calls for the same not-yet-cached key so near-simultaneous agent calls for
+  the same app/country share one upstream fetch instead of double-hitting
+  Apple.
 
 ### Prompts & resources
 - **One MCP prompt**: `compare_competitors(apps, country)` — expands to the
