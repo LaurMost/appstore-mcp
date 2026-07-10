@@ -1,0 +1,15 @@
+{
+  "name": "appstore-mcp",
+  "description": "Apple App Store competitor research: search, profiles, comparisons, review digests, charts, and screenshots from live public data.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Laurence Mostert"
+  },
+  "homepage": "https://github.com/LaurMost/appstore-mcp",
+  "mcpServers": {
+    "appstore": {
+      "command": "uvx",
+      "args": ["appstore-mcp"]
+    }
+  }
+}

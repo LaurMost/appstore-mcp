@@ -1,5 +1,7 @@
 # appstore-mcp
 
+<!-- mcp-name: io.github.laurmost/appstore-mcp -->
+
 An open-source MCP server for live Apple App Store competitor research.
 
 It lets AI agents search apps, fetch public App Store metadata, compare
@@ -26,7 +28,8 @@ Requires [uv](https://docs.astral.sh/uv/). Add to your MCP client config:
 }
 ```
 
-- **Claude Code**: `claude mcp add appstore -- uvx appstore-mcp`
+- **Claude Code**: `claude mcp add appstore -- uvx appstore-mcp`, or install as a
+  plugin: `/plugin marketplace add LaurMost/appstore-mcp` then `/plugin install appstore-mcp`
 - **Claude Desktop**: add the snippet above to `claude_desktop_config.json`
 - **Cursor**: add the snippet above to `~/.cursor/mcp.json`
 

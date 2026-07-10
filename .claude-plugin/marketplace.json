@@ -1,0 +1,14 @@
+{
+  "name": "appstore-mcp",
+  "description": "Apple App Store competitor research tools for AI agents.",
+  "owner": {
+    "name": "Laurence Mostert"
+  },
+  "plugins": [
+    {
+      "name": "appstore-mcp",
+      "source": "./",
+      "description": "Apple App Store competitor research MCP server (search, profiles, comparisons, review digests, charts, screenshots)."
+    }
+  ]
+}
