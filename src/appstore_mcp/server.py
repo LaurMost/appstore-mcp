@@ -13,6 +13,9 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentContext
 from fastmcp.server.context import Context
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
+from fastmcp.server.middleware.timing import DetailedTimingMiddleware
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import Image
@@ -168,6 +171,55 @@ def _validate_country(country: str) -> str:
     return country.lower()
 
 
+async def _log_fallback_failure(
+    ctx: Context, message: str, exc: Exception, **fields: Any
+) -> None:
+    """Shared shape for the two deep-fallback-failure warnings (page
+    enrichment in get_app_store_app; page fallback in _collect_reviews):
+    mirrors the exception to the client/local log with a consistent
+    structured `extra` payload, alongside (not instead of) the caller's own
+    `meta.warnings` entry.
+    """
+    await ctx.warning(
+        message,
+        extra={**fields, "error_type": type(exc).__name__, "error_message": str(exc)},
+    )
+
+
+class UnexpectedErrorLoggingMiddleware(Middleware):
+    """Logs tool-call exceptions that aren't already an agent-facing
+    AppStoreMCPError, so upstream format drift (e.g. `apple/normalize.py`
+    breaking on a changed Apple response shape) is visible on the server's
+    own log between the weekly live-CI runs (see PLAN.md's "Testing"
+    section) instead of silently surfacing as a bare, untraced error.
+
+    AppStoreMCPError (and subclasses - AppNotFoundError, InvalidInputError,
+    RateLimitedError, UpstreamError) are deliberately excluded: those are
+    the expected "tool error" tier from PLAN.md's failure-semantics design,
+    already written for agent recovery - logging every not-found/rate-limit
+    call at ERROR level would just be noise, not a signal.
+
+    Never transforms or swallows the exception (per FastMCP's "log and
+    re-raise" guidance for custom middleware error handling) - only adds a
+    server-side log line before it propagates unchanged.
+    """
+
+    def __init__(self, logger: logging.Logger | None = None) -> None:
+        self._logger = logger or get_logger("appstore_mcp.errors")
+
+    async def on_call_tool(
+        self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]
+    ) -> Any:
+        try:
+            return await call_next(context)
+        except AppStoreMCPError:
+            raise
+        except Exception:
+            tool_name = getattr(context.message, "name", "unknown")
+            self._logger.exception("unexpected error in tool %s", tool_name)
+            raise
+
+
 def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     if http is None:
         http = httpx.AsyncClient(
@@ -189,6 +241,23 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         icons=[icon],
         sampling_handler=sampling_handler,
         sampling_handler_behavior="fallback",
+    )
+
+    # Order matters (see FastMCP's middleware docs): error handling first so
+    # it wraps everything on the way in and catches exceptions from the
+    # middleware below it too; timing/logging last so they observe the
+    # actual post-processed outcome. All three log via `logging` (nested
+    # under the "fastmcp" logger, see get_logger), never `sys.stdout`, so
+    # they can't violate the stdio JSON-RPC-only constraint documented in
+    # main() below.
+    mcp.add_middleware(UnexpectedErrorLoggingMiddleware())
+    mcp.add_middleware(DetailedTimingMiddleware(logger=get_logger("appstore_mcp.timing")))
+    mcp.add_middleware(
+        StructuredLoggingMiddleware(
+            logger=get_logger("appstore_mcp.calls"),
+            include_payload_length=True,
+            methods=["tools/call"],
+        )
     )
 
     @mcp.tool(
@@ -309,14 +378,12 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 warnings.append(
                     f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
                 )
-                await ctx.warning(
+                await _log_fallback_failure(
+                    ctx,
                     f"page enrichment failed for app {ref.app_id}: {exc}",
-                    extra={
-                        "app_id": ref.app_id,
-                        "country": resolved_country,
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
+                    exc,
+                    app_id=ref.app_id,
+                    country=resolved_country,
                 )
             else:
                 profile.subtitle = enrichment.subtitle
@@ -636,15 +703,13 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 fresh = page_entry.fresh
             except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(f"page fallback also failed ({exc})")
-                await ctx.warning(
+                await _log_fallback_failure(
+                    ctx,
                     f"review page fallback also failed for app {app_id}: {exc}",
-                    extra={
-                        "app_id": app_id,
-                        "country": country,
-                        "sort": sort,
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
+                    exc,
+                    app_id=app_id,
+                    country=country,
+                    sort=sort,
                 )
 
         await _tick(1.0)  # stage done regardless of which exit path was taken

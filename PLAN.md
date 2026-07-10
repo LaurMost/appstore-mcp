@@ -218,6 +218,75 @@ Two schemas:
     path where it would ever read anything else. Revisit only if a tested
     HTTP self-host mode ships.
 
+### FastMCP `Middleware` usage (reviewed 2026-07-10 against FastMCP's Middleware docs)
+- **Adopted**: three middleware, registered in `create_server()` in the order
+  the docs recommend (error handling first so it wraps everything on the way
+  in; timing/logging last so they observe the actual post-processed
+  outcome):
+  - `UnexpectedErrorLoggingMiddleware` (custom, `server.py`) — logs any
+    `on_call_tool` exception that is *not* an `AppStoreMCPError` (i.e. a real
+    bug — e.g. `apple/normalize.py` breaking on an Apple format change) with
+    a traceback, then re-raises it unchanged; the weekly live-CI suite (see
+    Testing below) is otherwise the only thing that would ever notice this
+    class of failure. Deliberately *not* FastMCP's built-in
+    `ErrorHandlingMiddleware`: its `transform_errors` (default `True`) wraps
+    every non-`McpError` exception's message as generic `"Internal error:
+    ..."`, and `ToolError` (the base of `AppStoreMCPError`) is *not* an
+    `McpError` subclass — verified directly against the installed
+    `fastmcp` package — so it would rewrite `AppNotFoundError`/
+    `RateLimitedError`/etc.'s carefully-worded agent-recovery messages.
+    Separately, its logging isn't gated by exception type, so it would flag
+    every expected not-found/rate-limited call as `ERROR`-level noise
+    (see Failure semantics above — those are the "tool error" tier working
+    as designed, not bugs).
+  - `DetailedTimingMiddleware` — per-tool `"Tool 'X' completed/failed in
+    Yms"` log lines. Not the plain `TimingMiddleware`: it only logs the
+    generic `"tools/call"` method name, not which of the 6 tools ran.
+  - `StructuredLoggingMiddleware(include_payload_length=True,
+    methods=["tools/call"])` — JSON `request_start`/`request_success`/
+    `request_error` lines scoped to tool calls. `include_payloads` stays at
+    its `False` default so arguments aren't duplicated into the log.
+  - All three log via the stdlib `logging` module, nested under FastMCP's
+    `"fastmcp"` logger namespace (`get_logger`) — never `sys.stdout` — the
+    same constraint `main()` already documents for `ctx.warning` visibility.
+  - The two duplicate `ctx.warning(..., extra={...})` call sites above were
+    also consolidated into one `_log_fallback_failure` helper; behavior is
+    unchanged, just no longer copy-pasted.
+- **Deliberately not adopted** (each conflicts with or duplicates an
+  existing, deliberate design decision — not just unused-by-omission):
+  - *`ResponseCachingMiddleware`* — would sit *above* the tool as a second,
+    argument-keyed cache layer alongside the existing `TTLCache`
+    (`cache.py`), which is keyed at the HTTP-client layer by
+    `(endpoint, id/query, country)` specifically so e.g. `get_app_store_app`
+    and `compare_app_store_apps` can share one cache entry. A middleware
+    cache hit would also report `meta.fresh=True` from inside the tool
+    regardless of the middleware's own cache state — silently undermining
+    the one field whose whole purpose is telling the agent when data might
+    be stale.
+  - *`RateLimitingMiddleware` / `SlidingWindowRateLimitingMiddleware`* —
+    throttle the wrong direction: they protect the server from the client,
+    but stdio means server and client share one trust boundary (see
+    "No proactive throttle" under Caching & politeness above). The real
+    constraint is server-to-Apple, already handled by honestly surfacing
+    Apple's own 403/429 as `RateLimitedError`.
+  - *`RetryMiddleware`* — its default `retry_exceptions` never fire
+    (`fetch.py` already converts raw `httpx`/connection errors into
+    `UpstreamError`/`RateLimitedError` before middleware would ever see
+    them), and retrying a `RateLimitedError` specifically would be exactly
+    the proactive throttle-fighting this project avoids.
+  - *`PingMiddleware`* — keeps stateful HTTP connections alive; no effect on
+    stdio. Same rationale as not touching `ctx.transport` above.
+  - *`ResponseLimitingMiddleware`* — on overflow it discards all non-text
+    content and keeps only truncated text, which for
+    `get_app_store_screenshots` would silently drop every `Image` block —
+    the tool's entire declared purpose. That tool already bounds size via
+    `limit` (≤8) and per-image `return_exceptions=True` handling instead.
+  - *Session state, server composition/mounting, `on_initialize`, list-
+    filtering/component-metadata hooks* — no session-scoped data (would
+    conflict with the cross-session cache, as above), no mounted servers,
+    no auth/tiering concept; same reasoning as the adjacent Context-usage
+    entries above.
+
 ### Testing
 1. **Fixture-based unit tests** (bulk): real recorded responses in
    `tests/fixtures/` (lookup JSON, search JSON, saved App Store HTML, charts page,
