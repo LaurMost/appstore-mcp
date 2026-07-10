@@ -17,7 +17,17 @@ from appstore_mcp.apple.page import AppPageClient, PageParseError, enrichment_fr
 from appstore_mcp.apple.normalize import (
     chart_entry_from_feed,
     profile_from_lookup,
+    review_from_feed_entry,
     search_result_from_lookup,
+)
+from appstore_mcp.apple.page import reviews_from_html
+from appstore_mcp.apple import reviews as reviews_mod
+from appstore_mcp.apple.reviews import (
+    MAX_FEED_PAGES,
+    ReviewSort,
+    ReviewsClient,
+    entries_from_feed,
+    review_feed_url,
 )
 from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
 from appstore_mcp.models import (
@@ -26,6 +36,8 @@ from appstore_mcp.models import (
     CompareAppsResult,
     GetAppResult,
     Meta,
+    Review,
+    ReviewsResult,
     SearchAppsResult,
     Source,
 )
@@ -66,6 +78,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     itunes = ITunesClient(http)
     app_page = AppPageClient(http)
     charts = ChartsClient(http)
+    reviews_client = ReviewsClient(http)
 
     mcp: FastMCP = FastMCP(name="appstore-mcp", instructions=INSTRUCTIONS)
 
@@ -332,6 +345,88 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             sources=[
                 Source(name=charts_mod.SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)
             ],
+        )
+
+    @mcp.tool(
+        annotations={
+            "title": "Get App Store reviews",
+            "readOnlyHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def get_app_store_reviews(
+        app_id_or_url: str,
+        country: str | None = None,
+        limit: int = 50,
+        sort: ReviewSort = "most_recent",
+    ) -> ReviewsResult:
+        """Fetch recent public customer reviews for an app (numeric ID or
+        apps.apple.com URL). Best-effort: sourced from an undocumented Apple
+        feed capped at ~500 reviews per storefront, with a small page-sourced
+        fallback when the feed is empty. Reviews are per-country."""
+        ref = parse_app_ref(app_id_or_url)
+        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        limit = max(1, min(limit, 500))
+
+        collected: list[Review] = []
+        warnings: list[str] = []
+        sources: list[Source] = []
+        first_entry = None
+        for page_number in range(1, MAX_FEED_PAGES + 1):
+            entry = await reviews_client.fetch_page(
+                ref.app_id, country=resolved_country, sort=sort, page=page_number
+            )
+            if first_entry is None:
+                first_entry = entry
+            page_entries = entries_from_feed(entry.value)
+            if not page_entries:
+                break
+            sources.append(
+                Source(
+                    name=reviews_mod.SOURCE_NAME,
+                    url=review_feed_url(
+                        ref.app_id, country=resolved_country, sort=sort, page=page_number
+                    ),
+                    retrieved_at=entry.retrieved_at,
+                )
+            )
+            collected.extend(review_from_feed_entry(item) for item in page_entries)
+            if len(collected) >= limit:
+                break
+        collected = collected[:limit]
+
+        if not collected:
+            warnings.append(
+                f"the review feed returned no reviews for app {ref.app_id} in "
+                f"storefront '{resolved_country}'; falling back to the ~24 "
+                f"'most helpful' reviews rendered on the public App Store page"
+            )
+            try:
+                page_entry = await app_page.fetch_html(
+                    ref.app_id, country=resolved_country
+                )
+                collected = reviews_from_html(page_entry.value)[:limit]
+                sources.append(
+                    Source(
+                        name=page_mod.SOURCE_NAME,
+                        url=page_mod.page_url(ref.app_id, resolved_country),
+                        retrieved_at=page_entry.retrieved_at,
+                    )
+                )
+            except (AppStoreMCPError, PageParseError) as exc:
+                warnings.append(f"page fallback also failed ({exc})")
+
+        assert first_entry is not None
+        return ReviewsResult(
+            meta=Meta(
+                country=resolved_country,
+                retrieved_at=first_entry.retrieved_at,
+                fresh=first_entry.fresh,
+                warnings=warnings,
+            ),
+            app_id=ref.app_id,
+            reviews=collected,
+            sources=sources,
         )
 
     return mcp

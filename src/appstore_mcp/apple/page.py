@@ -114,17 +114,22 @@ def reviews_from_html(html: str) -> list[Review]:
         review = item.get("review")
         if not isinstance(review, dict):
             continue
-        body = review.get("body") or review.get("notes") or ""
+        body = review.get("contents") or ""
         if not body:
             continue
         rating = review.get("rating")
+        rating_int: int | None
+        try:
+            rating_int = int(rating) if rating is not None else None
+        except (TypeError, ValueError):
+            rating_int = None
         reviews.append(
             Review(
                 review_id=str(review.get("id")) if review.get("id") is not None else None,
                 title=review.get("title"),
                 body=body,
-                rating=int(rating) if isinstance(rating, (int, float)) else None,
-                author=review.get("userName"),
+                rating=rating_int,
+                author=review.get("reviewerName"),
                 updated_at=review.get("date"),
             )
         )
