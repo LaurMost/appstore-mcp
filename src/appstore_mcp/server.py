@@ -506,8 +506,12 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
 
     @mcp.prompt
     def compare_competitors(apps: str, country: str = DEFAULT_COUNTRY) -> str:
-        """Run a competitor comparison for the given apps (names, IDs, or
-        App Store URLs, comma-separated) on one storefront."""
+        """Run a competitor comparison for the given apps on one storefront.
+
+        Args:
+            apps: Names, IDs, or App Store URLs to compare, comma-separated.
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+        """
         return (
             f"Compare these apps on the '{country}' Apple App Store storefront: "
             f"{apps}.\n\n"
