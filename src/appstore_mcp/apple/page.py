@@ -131,7 +131,9 @@ def reviews_from_html(html: str) -> list[Review]:
 
         reviews.append(
             Review(
-                review_id=str(review.get("id")) if review.get("id") is not None else None,
+                review_id=str(review.get("id"))
+                if review.get("id") is not None
+                else None,
                 title=_str_or_none(review.get("title")),
                 body=body,
                 rating=rating_int,
@@ -176,7 +178,9 @@ def screenshot_urls_from_html(html: str, device: str, width: int = 400) -> list[
 
 
 class AppPageClient:
-    def __init__(self, http: httpx.AsyncClient, cache: TTLCache[str] | None = None) -> None:
+    def __init__(
+        self, http: httpx.AsyncClient, cache: TTLCache[str] | None = None
+    ) -> None:
         self._http = http
         self._cache = cache if cache is not None else TTLCache()
 

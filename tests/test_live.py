@@ -31,12 +31,15 @@ async def test_live_search(live_client: Client) -> None:
 
 
 async def test_live_profile_with_page_enrichment(live_client: Client) -> None:
-    result = await live_client.call_tool("get_app_store_app", {"app_id_or_url": DUOLINGO})
+    result = await live_client.call_tool(
+        "get_app_store_app", {"app_id_or_url": DUOLINGO}
+    )
     data = result.structured_content
     app = data["app"]
     assert app["name"]
     assert len(app["description"]) > 100
-    assert app["rating"] and 0 < app["rating"] <= 5
+    assert app["rating"]
+    assert 0 < app["rating"] <= 5
     # Page-parser drift detector: these are page-sourced fields.
     assert app["subtitle"], f"page enrichment broke: {data['meta']['warnings']}"
     assert app["has_iap"] is not None

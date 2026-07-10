@@ -20,9 +20,11 @@ Always respond in English, even when reviews are in other languages; translate
 quotes to English and note the original language in source_language_note.
 Respond with a single JSON object only - no markdown fences, no prose - with
 exactly these fields:
-  overall_sentiment: one of "very_negative", "negative", "mixed", "positive", "very_positive"
+  overall_sentiment: one of "very_negative", "negative", "mixed", "positive",
+    "very_positive"
   summary: 2-4 sentence overview of what reviewers say
-  themes: array of {theme, sentiment ("positive"|"negative"|"mixed"), approximate_share, example_quote}
+  themes: array of {theme, sentiment ("positive"|"negative"|"mixed"),
+    approximate_share, example_quote}
   top_complaints: array of short strings, most common first
   top_praise: array of short strings, most common first
   source_language_note: string or null (mention if reviews were not in English)

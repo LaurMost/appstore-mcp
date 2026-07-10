@@ -1,6 +1,7 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from fastmcp import Client
@@ -22,7 +23,8 @@ def test_screenshot_urls_rendered_from_page_templates(
     assert len(urls) == 10
     assert all(u.startswith("https://") for u in urls)
     # Templates rendered at capped width with height preserving aspect ratio.
-    assert "/400x" in urls[0] and urls[0].endswith("bb.jpg")
+    assert "/400x" in urls[0]
+    assert urls[0].endswith("bb.jpg")
     assert "{w}" not in urls[0]
 
 

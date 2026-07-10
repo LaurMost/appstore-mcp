@@ -24,7 +24,9 @@ def parse_app_ref(value: str) -> AppRef:
     match = _URL_RE.search(value)
     if match:
         country = match.group(1)
-        return AppRef(app_id=match.group(2), country=country.lower() if country else None)
+        return AppRef(
+            app_id=match.group(2), country=country.lower() if country else None
+        )
     raise InvalidInputError(
         f"Could not parse an App Store app ID from {value!r}. Pass a numeric ID "
         f"like '570060128' or a URL like "

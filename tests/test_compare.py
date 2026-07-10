@@ -29,7 +29,9 @@ def lookup_transport(hits: list[str] | None = None) -> httpx.MockTransport:
 
 async def test_compare_returns_profiles_side_by_side_in_one_call() -> None:
     hits: list[str] = []
-    client = Client(create_server(http=httpx.AsyncClient(transport=lookup_transport(hits))))
+    client = Client(
+        create_server(http=httpx.AsyncClient(transport=lookup_transport(hits)))
+    )
     async with client:
         result = await client.call_tool(
             "compare_app_store_apps",
@@ -42,7 +44,11 @@ async def test_compare_returns_profiles_side_by_side_in_one_call() -> None:
             },
         )
     data = result.structured_content
-    assert [a["app_id"] for a in data["apps"]] == ["570060128", "829587759", "379968583"]
+    assert [a["app_id"] for a in data["apps"]] == [
+        "570060128",
+        "829587759",
+        "379968583",
+    ]
     assert data["errors"] == []
     for app in data["apps"]:
         assert app["description_length"] > 0
@@ -60,7 +66,8 @@ async def test_compare_reports_partial_failures_in_band() -> None:
     data = result.structured_content
     assert [a["app_id"] for a in data["apps"]] == ["570060128"]
     reasons = {e["app"]: e["reason"] for e in data["errors"]}
-    assert "111111111" in reasons and "not found" in reasons["111111111"]
+    assert "111111111" in reasons
+    assert "not found" in reasons["111111111"]
     assert "not-a-valid-ref" in reasons
     assert data["meta"]["warnings"], "partial failure surfaces a warning"
 
@@ -79,7 +86,7 @@ async def test_compare_not_found_error_reports_the_value_the_caller_sent() -> No
 async def test_compare_raises_only_when_every_app_fails() -> None:
     client = Client(create_server(http=httpx.AsyncClient(transport=lookup_transport())))
     async with client:
-        with pytest.raises(Exception, match="[Nn]one of"):
+        with pytest.raises(Exception, match=r"[Nn]one of"):
             await client.call_tool(
                 "compare_app_store_apps", {"apps": ["111111111", "222222222"]}
             )

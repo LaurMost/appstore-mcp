@@ -34,6 +34,7 @@ dev = [
     "mypy>=1.13",
     "pytest>=8",
     "pytest-asyncio>=0.25",
+    "ruff>=0.9",
 ]
 
 [build-system]
@@ -48,6 +49,27 @@ addopts = "-m 'not live'"
 markers = ["live: hits live Apple endpoints; run explicitly with -m live"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # bugbear
+    "UP",    # pyupgrade
+    "SIM",   # simplify
+    "C4",    # comprehensions
+    "ASYNC", # async pitfalls
+    "T20",   # ban print/pprint - stdout is the JSON-RPC channel
+    "PT",    # pytest style
+    "RUF",   # ruff-specific
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# CurrentContext() as a parameter default is fastmcp's dependency-injection
+# idiom, not the mutable-default bug B008 guards against.
+extend-immutable-calls = ["fastmcp.dependencies.CurrentContext", "pydantic.Field"]
 
 [tool.mypy]
 python_version = "3.12"

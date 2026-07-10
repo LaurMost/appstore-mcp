@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -21,7 +22,8 @@ def test_chart_entry_from_real_feed(load_fixture: Callable[[str], Any]) -> None:
     assert entry.name.startswith("Duolingo")
     assert entry.bundle_id == "com.duolingo.DuolingoMobile"
     assert entry.developer == "Duolingo"
-    assert entry.icon_url and entry.icon_url.startswith("https://")
+    assert entry.icon_url
+    assert entry.icon_url.startswith("https://")
 
 
 def test_chart_url_shapes() -> None:

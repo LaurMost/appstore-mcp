@@ -91,7 +91,9 @@ def chart_entry_from_feed(entry: dict[str, Any], rank: int) -> ChartEntry:
     id_node = entry.get("id", {})
     attrs = id_node.get("attributes", {}) if isinstance(id_node, dict) else {}
     category = entry.get("category", {})
-    category_attrs = category.get("attributes", {}) if isinstance(category, dict) else {}
+    category_attrs = (
+        category.get("attributes", {}) if isinstance(category, dict) else {}
+    )
     images = entry.get("im:image", [])
     icon = _label(images[-1]) if isinstance(images, list) and images else None
     return ChartEntry(

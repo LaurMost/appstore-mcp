@@ -92,6 +92,8 @@ uv sync --dev
 uv run pytest          # offline fixture tests
 uv run pytest -m live  # live smoke tests against real Apple endpoints
 uv run mypy
+uv run ruff check .    # lint
+uv run ruff format .   # format (Black-compatible style)
 ```
 
 This project is not affiliated with or endorsed by Apple. "App Store" is a

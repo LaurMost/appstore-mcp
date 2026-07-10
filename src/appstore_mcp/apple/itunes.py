@@ -24,7 +24,9 @@ def search_params(query: str, *, country: str, limit: int) -> dict[str, Any]:
 
 def search_url(query: str, *, country: str, limit: int) -> str:
     """The exact URL a search fetches - reported verbatim in Source entries."""
-    return str(httpx.URL(SEARCH_URL, params=search_params(query, country=country, limit=limit)))
+    return str(
+        httpx.URL(SEARCH_URL, params=search_params(query, country=country, limit=limit))
+    )
 
 
 def lookup_params(app_ids: list[str], *, country: str) -> dict[str, Any]:
@@ -37,7 +39,9 @@ def lookup_url(app_ids: list[str], *, country: str) -> str:
 
 
 class ITunesClient:
-    def __init__(self, http: httpx.AsyncClient, cache: TTLCache[Any] | None = None) -> None:
+    def __init__(
+        self, http: httpx.AsyncClient, cache: TTLCache[Any] | None = None
+    ) -> None:
         self._http = http
         self._cache = cache if cache is not None else TTLCache()
 
@@ -46,7 +50,9 @@ class ITunesClient:
         key = f"search:{country}:{limit}:{query.strip().lower()}"
 
         async def fetch() -> Any:
-            return await get_json(self._http, SEARCH_URL, source=SOURCE_NAME, params=params)
+            return await get_json(
+                self._http, SEARCH_URL, source=SOURCE_NAME, params=params
+            )
 
         return await self._cache.get_or_fetch(key, fetch)
 
@@ -55,6 +61,8 @@ class ITunesClient:
         key = f"lookup:{country}:{params['id']}"
 
         async def fetch() -> Any:
-            return await get_json(self._http, LOOKUP_URL, source=SOURCE_NAME, params=params)
+            return await get_json(
+                self._http, LOOKUP_URL, source=SOURCE_NAME, params=params
+            )
 
         return await self._cache.get_or_fetch(key, fetch)

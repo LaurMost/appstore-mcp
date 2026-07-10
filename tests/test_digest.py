@@ -69,7 +69,8 @@ async def test_digest_returns_structured_digest() -> None:
     # The sampled prompt must actually carry review text.
     messages, params = seen[0]
     prompt_text = messages[0].content.text
-    assert "/5]" in prompt_text and "570060128" in prompt_text
+    assert "/5]" in prompt_text
+    assert "570060128" in prompt_text
     assert "English" in (params.systemPrompt or "")
 
 
@@ -130,4 +131,9 @@ async def test_digest_reports_progress_through_retry() -> None:
             {"app_id_or_url": "570060128", "limit": 20},
             progress_handler=progress_handler,
         )
-    assert calls == [(5.0, 100, None), (50.0, 100, None), (75, 100, None), (100, 100, None)]
+    assert calls == [
+        (5.0, 100, None),
+        (50.0, 100, None),
+        (75, 100, None),
+        (100, 100, None),
+    ]

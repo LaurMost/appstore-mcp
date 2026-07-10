@@ -15,7 +15,13 @@ from appstore_mcp.cache import CacheEntry, TTLCache
 from appstore_mcp.errors import InvalidInputError
 from appstore_mcp.models import ChartName
 
-__all__ = ["ChartName", "ChartsClient", "chart_url", "resolve_genre_id", "entries_from_chart_feed"]
+__all__ = [
+    "ChartName",
+    "ChartsClient",
+    "chart_url",
+    "entries_from_chart_feed",
+    "resolve_genre_id",
+]
 
 SOURCE_NAME = "apple_itunes_rss_charts"
 
@@ -77,7 +83,9 @@ def resolve_genre_id(category: str) -> str:
 def chart_url(country: str, chart: str, *, limit: int, genre_id: str | None) -> str:
     feed = CHART_FEEDS[chart]
     genre_part = f"/genre={genre_id}" if genre_id else ""
-    return f"https://itunes.apple.com/{country}/rss/{feed}/limit={limit}{genre_part}/json"
+    return (
+        f"https://itunes.apple.com/{country}/rss/{feed}/limit={limit}{genre_part}/json"
+    )
 
 
 def entries_from_chart_feed(payload: Any) -> list[dict[str, Any]]:
@@ -89,7 +97,9 @@ def entries_from_chart_feed(payload: Any) -> list[dict[str, Any]]:
 
 
 class ChartsClient:
-    def __init__(self, http: httpx.AsyncClient, cache: TTLCache[Any] | None = None) -> None:
+    def __init__(
+        self, http: httpx.AsyncClient, cache: TTLCache[Any] | None = None
+    ) -> None:
         self._http = http
         self._cache = cache if cache is not None else TTLCache()
 

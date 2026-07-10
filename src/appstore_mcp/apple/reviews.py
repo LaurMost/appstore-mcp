@@ -34,7 +34,9 @@ def review_feed_url(app_id: str, *, country: str, sort: str, page: int) -> str:
 
 
 class ReviewsClient:
-    def __init__(self, http: httpx.AsyncClient, cache: TTLCache[Any] | None = None) -> None:
+    def __init__(
+        self, http: httpx.AsyncClient, cache: TTLCache[Any] | None = None
+    ) -> None:
         self._http = http
         self._cache = cache if cache is not None else TTLCache()
 

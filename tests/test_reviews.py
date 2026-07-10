@@ -1,6 +1,7 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from fastmcp import Client
@@ -30,7 +31,9 @@ def test_fallback_reviews_from_real_page(load_fixture: Callable[[str], Any]) -> 
     assert all(r.body for r in reviews)
 
 
-def reviews_transport(empty_feed: bool = False) -> tuple[httpx.MockTransport, list[str]]:
+def reviews_transport(
+    empty_feed: bool = False,
+) -> tuple[httpx.MockTransport, list[str]]:
     paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -52,7 +55,9 @@ def reviews_transport(empty_feed: bool = False) -> tuple[httpx.MockTransport, li
 
 async def test_reviews_tool_respects_limit() -> None:
     transport, _ = reviews_transport()
-    async with Client(create_server(http=httpx.AsyncClient(transport=transport))) as client:
+    async with Client(
+        create_server(http=httpx.AsyncClient(transport=transport))
+    ) as client:
         result = await client.call_tool(
             "get_app_store_reviews", {"app_id_or_url": "570060128", "limit": 10}
         )
@@ -64,7 +69,9 @@ async def test_reviews_tool_respects_limit() -> None:
 
 async def test_reviews_tool_paginates_beyond_one_feed_page() -> None:
     transport, paths = reviews_transport()
-    async with Client(create_server(http=httpx.AsyncClient(transport=transport))) as client:
+    async with Client(
+        create_server(http=httpx.AsyncClient(transport=transport))
+    ) as client:
         result = await client.call_tool(
             "get_app_store_reviews", {"app_id_or_url": "570060128", "limit": 60}
         )
@@ -75,7 +82,9 @@ async def test_reviews_tool_paginates_beyond_one_feed_page() -> None:
 
 async def test_reviews_tool_falls_back_to_page_reviews_when_feed_empty() -> None:
     transport, paths = reviews_transport(empty_feed=True)
-    async with Client(create_server(http=httpx.AsyncClient(transport=transport))) as client:
+    async with Client(
+        create_server(http=httpx.AsyncClient(transport=transport))
+    ) as client:
         result = await client.call_tool(
             "get_app_store_reviews", {"app_id_or_url": "570060128"}
         )
@@ -89,7 +98,9 @@ async def test_reviews_tool_falls_back_to_page_reviews_when_feed_empty() -> None
 def _progress_handler() -> tuple[Any, list[tuple[float, float | None, str | None]]]:
     calls: list[tuple[float, float | None, str | None]] = []
 
-    async def handler(progress: float, total: float | None, message: str | None) -> None:
+    async def handler(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
         calls.append((progress, total, message))
 
     return handler, calls

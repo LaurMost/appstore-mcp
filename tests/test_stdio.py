@@ -9,7 +9,7 @@ reading responses interactively the way a real MCP client does.
 import json
 import subprocess
 import sys
-from typing import Any, IO
+from typing import IO, Any
 
 
 def _send(stdin: IO[str], message: dict[str, Any]) -> None:
@@ -33,7 +33,8 @@ def test_stdout_is_pure_jsonrpc_during_handshake() -> None:
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert proc.stdin is not None and proc.stdout is not None
+    assert proc.stdin is not None
+    assert proc.stdout is not None
     try:
         _send(
             proc.stdin,

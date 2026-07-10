@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from appstore_mcp.apple.normalize import profile_from_lookup, search_result_from_lookup
 
@@ -15,8 +16,10 @@ def test_search_result_from_real_lookup_payload(
     assert result.url.startswith("https://apps.apple.com/us/app/")
     assert result.price == 0.0
     assert result.currency == "USD"
-    assert result.rating is not None and 0 < result.rating <= 5
-    assert result.rating_count is not None and result.rating_count > 100_000
+    assert result.rating is not None
+    assert 0 < result.rating <= 5
+    assert result.rating_count is not None
+    assert result.rating_count > 100_000
     assert result.primary_genre == "Education"
 
 
@@ -34,7 +37,8 @@ def test_profile_from_real_lookup_payload(
     assert profile.content_rating == "4+"
     assert "EN" in profile.languages
     assert profile.device_families[:2] == ["iphone", "ipad"]
-    assert profile.icon_url and "512" in profile.icon_url
+    assert profile.icon_url
+    assert "512" in profile.icon_url
     # Apple's lookup returned no screenshots for this app; must not blow up.
     assert profile.screenshot_urls == []
     assert profile.screenshot_count == 0

@@ -49,7 +49,8 @@ async def test_repeat_lookup_is_served_from_cache() -> None:
     first = await client.lookup(["570060128"], country="us")
     second = await client.lookup(["570060128"], country="us")
     assert len(hits) == 1
-    assert first.fresh is True and second.fresh is False
+    assert first.fresh is True
+    assert second.fresh is False
 
 
 async def test_429_maps_to_rate_limited_error() -> None:

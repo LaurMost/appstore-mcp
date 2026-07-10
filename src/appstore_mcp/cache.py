@@ -5,7 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from appstore_mcp.models import utcnow
 
@@ -15,20 +15,20 @@ DEFAULT_TTL_SECONDS = 15 * 60
 
 
 @dataclass
-class CacheEntry(Generic[T]):
+class CacheEntry[T]:
     value: T
     retrieved_at: datetime
     fresh: bool
 
 
 @dataclass
-class _Stored(Generic[T]):
+class _Stored[T]:
     value: T
     retrieved_at: datetime
     stored_at: float
 
 
-class TTLCache(Generic[T]):
+class TTLCache[T]:
     def __init__(
         self,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
@@ -39,7 +39,9 @@ class TTLCache(Generic[T]):
         self._entries: dict[str, _Stored[T]] = {}
         self._lock = asyncio.Lock()
 
-    async def get_or_fetch(self, key: str, fetch: Callable[[], Awaitable[T]]) -> CacheEntry[T]:
+    async def get_or_fetch(
+        self, key: str, fetch: Callable[[], Awaitable[T]]
+    ) -> CacheEntry[T]:
         async with self._lock:
             stored = self._entries.get(key)
             if stored is not None and self._clock() - stored.stored_at < self._ttl:

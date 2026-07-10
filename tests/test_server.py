@@ -23,7 +23,8 @@ def apple_transport(page_status: int = 200) -> httpx.MockTransport:
             )
         if path == "/search":
             return httpx.Response(
-                200, content=(FIXTURES / "search_language_learning_us.json").read_bytes()
+                200,
+                content=(FIXTURES / "search_language_learning_us.json").read_bytes(),
             )
         if path == "/lookup":
             ids = params.get("id", "")
@@ -76,7 +77,9 @@ async def test_get_app_returns_full_profile_without_raw(server_client: Client) -
     assert data["raw"] is None
 
 
-async def test_get_app_include_raw_returns_lookup_payload(server_client: Client) -> None:
+async def test_get_app_include_raw_returns_lookup_payload(
+    server_client: Client,
+) -> None:
     async with server_client as client:
         result = await client.call_tool(
             "get_app_store_app", {"app_id_or_url": "570060128", "include_raw": True}
@@ -141,10 +144,14 @@ async def test_get_app_can_skip_page_enrichment() -> None:
     assert "apps.apple.com" not in hits
 
 
-async def test_get_app_not_found_is_agent_recoverable_error(server_client: Client) -> None:
+async def test_get_app_not_found_is_agent_recoverable_error(
+    server_client: Client,
+) -> None:
     async with server_client as client:
         with pytest.raises(Exception, match="per-country"):
-            await client.call_tool("get_app_store_app", {"app_id_or_url": "999999999999"})
+            await client.call_tool(
+                "get_app_store_app", {"app_id_or_url": "999999999999"}
+            )
 
 
 async def test_tools_carry_required_annotations(server_client: Client) -> None:

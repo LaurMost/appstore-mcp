@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,9 @@ def test_extracts_enrichment_fields_from_real_page(
     assert enrichment.privacy is not None
     identifiers = {p["identifier"] for p in enrichment.privacy}
     assert "DATA_USED_TO_TRACK_YOU" in identifiers
-    tracked = next(p for p in enrichment.privacy if p["identifier"] == "DATA_USED_TO_TRACK_YOU")
+    tracked = next(
+        p for p in enrichment.privacy if p["identifier"] == "DATA_USED_TO_TRACK_YOU"
+    )
     assert "Purchases" in tracked["categories"]
     # Compact: no artwork/styling noise in the normalized privacy cards.
     assert "artwork" not in tracked

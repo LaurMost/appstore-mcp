@@ -1,6 +1,7 @@
 """FastMCP server: thin tools over the apple/ clients."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -50,8 +51,8 @@ from appstore_mcp.apple.page import (
 )
 from appstore_mcp.apple.reviews import (
     MAX_FEED_PAGES,
-    ReviewSort,
     ReviewsClient,
+    ReviewSort,
     entries_from_feed,
     review_feed_url,
 )
@@ -115,6 +116,7 @@ def _sampling_fallback_handler() -> Any | None:
             return None
     return None
 
+
 INSTRUCTIONS = """\
 Live public Apple App Store data for competitor research: search, app profiles,
 side-by-side comparisons, reviews, and charts.
@@ -145,9 +147,7 @@ def _load_icon() -> Icon:
     A data URI (rather than a hosted URL) matches how this project ships:
     stdio-only via `uvx`, with no domain of its own to host a static asset on.
     """
-    svg_bytes = (
-        resources.files("appstore_mcp").joinpath("assets/icon.svg").read_bytes()
-    )
+    svg_bytes = resources.files("appstore_mcp").joinpath("assets/icon.svg").read_bytes()
     data_uri = Image(data=svg_bytes, format="svg+xml").to_data_uri()
     return Icon(src=data_uri, mimeType="image/svg+xml", sizes=["any"])
 
@@ -156,10 +156,8 @@ async def _reap(task: "asyncio.Task[Any]") -> None:
     """Cancel an in-flight companion task and retrieve its outcome so the
     event loop never logs 'exception was never retrieved'."""
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
-    except (asyncio.CancelledError, Exception):
-        pass
 
 
 def _validate_country(country: str) -> str:
@@ -251,7 +249,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     # they can't violate the stdio JSON-RPC-only constraint documented in
     # main() below.
     mcp.add_middleware(UnexpectedErrorLoggingMiddleware())
-    mcp.add_middleware(DetailedTimingMiddleware(logger=get_logger("appstore_mcp.timing")))
+    mcp.add_middleware(
+        DetailedTimingMiddleware(logger=get_logger("appstore_mcp.timing"))
+    )
     mcp.add_middleware(
         StructuredLoggingMiddleware(
             logger=get_logger("appstore_mcp.calls"),
@@ -287,11 +287,12 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         country = _validate_country(country)
         entry = await itunes.search(query, country=country, limit=limit)
         results = [
-            search_result_from_lookup(item)
-            for item in entry.value.get("results", [])
+            search_result_from_lookup(item) for item in entry.value.get("results", [])
         ]
         return SearchAppsResult(
-            meta=Meta(country=country, retrieved_at=entry.retrieved_at, fresh=entry.fresh),
+            meta=Meta(
+                country=country, retrieved_at=entry.retrieved_at, fresh=entry.fresh
+            ),
             query=query,
             results=results,
             sources=[
@@ -343,7 +344,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             itunes.lookup([ref.app_id], country=resolved_country)
         )
         page_task = (
-            asyncio.create_task(app_page.fetch_html(ref.app_id, country=resolved_country))
+            asyncio.create_task(
+                app_page.fetch_html(ref.app_id, country=resolved_country)
+            )
             if include_page_data
             else None
         )
@@ -376,7 +379,8 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 enrichment = enrichment_from_html(page_entry.value)
             except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(
-                    f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
+                    f"page enrichment failed; subtitle/has_iap/privacy "
+                    f"unavailable ({exc})"
                 )
                 await _log_fallback_failure(
                     ctx,
@@ -435,7 +439,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         """
         country = _validate_country(country)
         if not apps:
-            raise InvalidInputError("Pass at least one app ID or App Store URL in `apps`.")
+            raise InvalidInputError(
+                "Pass at least one app ID or App Store URL in `apps`."
+            )
 
         errors: list[AppError] = []
         ordered_ids: list[str] = []
@@ -458,8 +464,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
 
         entry = await itunes.lookup(ordered_ids, country=country)
         by_id = {
-            str(item.get("trackId")): item
-            for item in entry.value.get("results", [])
+            str(item.get("trackId")): item for item in entry.value.get("results", [])
         }
         profiles = []
         for app_id in ordered_ids:
@@ -478,12 +483,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         if not profiles:
             raise AppStoreMCPError(
                 f"None of the requested apps could be fetched in storefront "
-                f"'{country}': "
-                + "; ".join(f"{e.app}: {e.reason}" for e in errors)
+                f"'{country}': " + "; ".join(f"{e.app}: {e.reason}" for e in errors)
             )
 
         warnings = (
-            [f"{len(errors)} of {len(apps)} requested apps could not be fetched; see errors"]
+            [
+                f"{len(errors)} of {len(apps)} requested apps could not be "
+                f"fetched; see errors"
+            ]
             if errors
             else []
         )
@@ -567,7 +574,11 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             category=category,
             entries=entries,
             sources=[
-                Source(name=charts_mod.SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)
+                Source(
+                    name=charts_mod.SOURCE_NAME,
+                    url=url,
+                    retrieved_at=entry.retrieved_at,
+                )
             ],
         )
 
@@ -926,7 +937,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         )
         images = []
         fetched_urls = []
-        for url, result in zip(urls, downloads):
+        for url, result in zip(urls, downloads, strict=False):
             if isinstance(result, BaseException):
                 warnings.append(f"failed to fetch {url}: {result}")
                 continue
