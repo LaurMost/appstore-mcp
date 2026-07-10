@@ -1,6 +1,7 @@
 """FastMCP server: thin tools over the apple/ clients."""
 
 import asyncio
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentContext
 from fastmcp.server.context import Context
 from fastmcp.tools import ToolResult
+from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import Image
 from mcp.types import SamplingMessage, TextContent
 from pydantic import Field, ValidationError
@@ -286,7 +288,15 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 warnings.append(
                     f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
                 )
-                await ctx.warning(f"page enrichment failed for app {ref.app_id}: {exc}")
+                await ctx.warning(
+                    f"page enrichment failed for app {ref.app_id}: {exc}",
+                    extra={
+                        "app_id": ref.app_id,
+                        "country": resolved_country,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                )
             else:
                 profile.subtitle = enrichment.subtitle
                 profile.has_iap = enrichment.has_iap
@@ -603,7 +613,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(f"page fallback also failed ({exc})")
                 await ctx.warning(
-                    f"review page fallback also failed for app {app_id}: {exc}"
+                    f"review page fallback also failed for app {app_id}: {exc}",
+                    extra={
+                        "app_id": app_id,
+                        "country": country,
+                        "sort": sort,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
                 )
 
         await _tick(1.0)  # stage done regardless of which exit path was taken
@@ -875,6 +892,13 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
 def main() -> None:
     # Stdio transport: stdout carries JSON-RPC only; never print to stdout here
     # (fastmcp's own banner and logging go to stderr).
+    #
+    # ctx.warning(...) calls (see get_app_store_app, _collect_reviews) are
+    # only mirrored to the server's own log at DEBUG if this logger is raised
+    # explicitly - otherwise they're only visible to a client that's
+    # listening for them. This just raises a stdlib logging.Logger's level;
+    # it never touches sys.stdout, so it can't violate the constraint above.
+    get_logger(name="fastmcp.server.context.to_client").setLevel(logging.DEBUG)
     create_server().run(transport="stdio")
 
 

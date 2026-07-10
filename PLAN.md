@@ -172,9 +172,17 @@ Two schemas:
     often-slower sampling call, under its 120s tool timeout.
   - `ctx.warning` alongside (not instead of) the existing `meta.warnings`
     string at the two deepest fallback points (page-enrichment failure in
-    `get_app_store_app`; page-fallback-also-failed in `get_app_store_reviews`)
+    `get_app_store_app`; page-fallback-also-failed in `_collect_reviews`)
     — cheap extra observability for anyone tailing client-side logs, on top
-    of the structured warning the response already carries.
+    of the structured warning the response already carries. Both calls pass
+    `extra={app_id, country, error_type, error_message, ...}` (reviewed
+    2026-07-10 against the FastMCP "Client Logging" docs) so the structured
+    fields are queryable in the client-side log stream, not just embedded in
+    the message string. `main()` also raises the
+    `fastmcp.server.context.to_client` logger to `DEBUG` so these are visible
+    in the server's own stderr output locally/in CI, not only to a listening
+    client — a stdlib `logging.Logger.setLevel` call, so it never touches
+    stdout and can't violate the stdio JSON-RPC-only constraint.
 - **Deliberately not adopted** (each has a real conflict or no motivating
   case here, not just unused-by-omission):
   - *Session state* (`ctx.get_state`/`set_state`) — would conflict with the
