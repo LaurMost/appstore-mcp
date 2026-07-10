@@ -287,6 +287,26 @@ Two schemas:
     no auth/tiering concept; same reasoning as the adjacent Context-usage
     entries above.
 
+### FastMCP `Lifespan`/`Depends()` usage (reviewed 2026-07-10 against FastMCP's
+Dependency Injection and Lifespans docs)
+- **Adopted**: `create_server()` uses `@lifespan` (`fastmcp.server.lifespan`)
+  solely to close the shared `httpx.AsyncClient` on server shutdown, and only
+  when `create_server()` built that client itself (`http=None`, the
+  production/`main()` path) — never when a caller injects their own client
+  (`create_server(http=...)`, what every test does to install a
+  `MockTransport`), since that client is the caller's resource to manage.
+  Without this, the process-lifetime client was never `.aclose()`'d.
+- **Deliberately not adopted**: `Depends()` for the shared `httpx.AsyncClient`,
+  `TTLCache`, and the four `apple/` client wrappers built once in
+  `create_server()` and closed over by every tool. `Depends()` dependencies
+  are cached per-*request*, not per-server-lifetime — wrapping any of these in
+  `Depends()` would either reconstruct them on every call (breaking connection
+  pooling and the point of the shared `TTLCache`, see Caching & politeness
+  above) or just return the same already-built singleton, which is exactly
+  what the existing closures already do with zero indirection. `Depends()`
+  is the right tool for genuinely per-request or cheaply-recomputed values;
+  none of this server's shared infrastructure fits that shape.
+
 ### Testing
 1. **Fixture-based unit tests** (bulk): real recorded responses in
    `tests/fixtures/` (lookup JSON, search JSON, saved App Store HTML, charts page,

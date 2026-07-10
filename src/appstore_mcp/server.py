@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from importlib import resources
@@ -14,6 +15,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentContext
 from fastmcp.server.context import Context
+from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from fastmcp.server.middleware.timing import DetailedTimingMiddleware
@@ -219,11 +221,24 @@ class UnexpectedErrorLoggingMiddleware(Middleware):
 
 
 def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
+    # Only a client built here is ours to close: a caller-supplied `http`
+    # (every test does this, to inject a MockTransport) is the caller's
+    # resource, and may be reused or closed on their own schedule.
+    owns_http = http is None
     if http is None:
         http = httpx.AsyncClient(
             headers={"User-Agent": USER_AGENT},
             timeout=20.0,
         )
+
+    @lifespan
+    async def _close_owned_http(server: FastMCP) -> AsyncIterator[None]:
+        try:
+            yield None
+        finally:
+            if owns_http:
+                await http.aclose()
+
     cache: TTLCache[Any] = TTLCache()  # one cache across all sources
     itunes = ITunesClient(http, cache)
     app_page = AppPageClient(http, cache)
@@ -239,6 +254,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         icons=[icon],
         sampling_handler=sampling_handler,
         sampling_handler_behavior="fallback",
+        lifespan=_close_owned_http,
     )
 
     # Order matters (see FastMCP's middleware docs): error handling first so
