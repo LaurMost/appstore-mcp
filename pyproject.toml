@@ -14,7 +14,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=3",
+    # [tasks] (docket) is required, not optional: TaskConfig(mode!="forbidden")
+    # validates via require_docket() at tool-registration time regardless of
+    # whether any client ever requests a background task, so it must always
+    # be installed, not left to an opt-in extra like anthropic/openai below.
+    "fastmcp[tasks]>=3",
     "httpx>=0.28.1",
 ]
 
@@ -67,9 +71,13 @@ select = [
 ]
 
 [tool.ruff.lint.flake8-bugbear]
-# CurrentContext() as a parameter default is fastmcp's dependency-injection
-# idiom, not the mutable-default bug B008 guards against.
-extend-immutable-calls = ["fastmcp.dependencies.CurrentContext", "pydantic.Field"]
+# CurrentContext()/Progress() as parameter defaults are fastmcp's
+# dependency-injection idiom, not the mutable-default bug B008 guards against.
+extend-immutable-calls = [
+    "fastmcp.dependencies.CurrentContext",
+    "fastmcp.dependencies.Progress",
+    "pydantic.Field",
+]
 
 [tool.mypy]
 python_version = "3.12"

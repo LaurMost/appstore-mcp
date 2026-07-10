@@ -7,18 +7,19 @@ import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from importlib import resources
 from typing import Annotated, Any, Literal
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.dependencies import CurrentContext
+from fastmcp.dependencies import CurrentContext, Progress
 from fastmcp.server.context import Context
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from fastmcp.server.middleware.timing import DetailedTimingMiddleware
+from fastmcp.server.tasks import TaskConfig
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import Image
@@ -141,6 +142,14 @@ _COUNTRY_RE = re.compile(r"^[a-zA-Z]{2}$")
 DEFAULT_COUNTRY = "us"
 
 WEBSITE_URL = "https://github.com/LaurMost/appstore-mcp"
+
+# Shared by the three tools whose sequential/blocking work (up to 10 review
+# feed pages, LLM sampling, concurrent screenshot downloads) makes them
+# candidates for MCP background task execution (SEP-1686). `mode="optional"`
+# preserves today's synchronous behavior for clients that don't request a
+# task, and only changes behavior for task-aware clients (graceful
+# degradation - see FastMCP's Background Tasks docs).
+_BACKGROUND_TASK = TaskConfig(mode="optional", poll_interval=timedelta(seconds=5))
 
 
 def _load_icon() -> Icon:
@@ -607,6 +616,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         },
         icons=[icon],
         timeout=30.0,
+        task=_BACKGROUND_TASK,
     )
     async def get_app_store_reviews(
         app_id_or_url: str,
@@ -614,6 +624,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         limit: Annotated[int, Field(ge=1, le=500)] = 50,
         sort: ReviewSort = "most_recent",
         ctx: Context = CurrentContext(),
+        progress: Progress = Progress(),
     ) -> ReviewsResult:
         """Fetch recent public customer reviews for an app. Best-effort:
         sourced from an undocumented Apple feed capped at ~500 reviews per
@@ -632,8 +643,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         """
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        await progress.set_total(100)
         collection = await _collect_reviews(
-            ref.app_id, country=resolved_country, sort=sort, limit=limit, ctx=ctx
+            ref.app_id,
+            country=resolved_country,
+            sort=sort,
+            limit=limit,
+            ctx=ctx,
+            progress=progress,
         )
         return ReviewsResult(
             meta=Meta(
@@ -654,6 +671,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         sort: ReviewSort,
         limit: int,
         ctx: Context,
+        progress: Progress,
         progress_start: float = 0,
         progress_end: float = 100,
     ) -> _ReviewCollection:
@@ -668,13 +686,28 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         pages, an early break once `limit` is satisfied, or the page
         fallback succeeding/failing) - otherwise a client's progress
         indicator can stall below 100% with no "done" signal for this stage.
+
+        Every tick reports through both `ctx.report_progress` (an MCP
+        progress notification, delivered when the *client* supplied a
+        progressToken - the only channel that reaches a synchronous/
+        immediate-mode call) and the `Progress` dependency (delivered via
+        Docket's execution store when the *client* requested `task=True` -
+        the only channel a background-task caller can poll). Neither alone
+        covers both cases, so both are always driven off the same tick.
         """
         span = progress_end - progress_start
+        last_progress = progress_start
 
-        async def _tick(fraction: float) -> None:
-            await ctx.report_progress(
-                progress=progress_start + span * fraction, total=100
-            )
+        async def _tick(fraction: float, message: str | None = None) -> None:
+            nonlocal last_progress
+            absolute = progress_start + span * fraction
+            await ctx.report_progress(progress=absolute, total=100)
+            delta = round(absolute - last_progress)
+            if delta:
+                await progress.increment(delta)
+            last_progress = absolute
+            if message is not None:
+                await progress.set_message(message)
 
         collected: list[Review] = []
         warnings: list[str] = []
@@ -686,7 +719,10 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             )
             # Best-effort estimate: the loop below may break early once `limit`
             # is satisfied, so `MAX_FEED_PAGES` is an upper bound, not a promise.
-            await _tick(page_number / MAX_FEED_PAGES)
+            await _tick(
+                page_number / MAX_FEED_PAGES,
+                f"Fetched review page {page_number}/{MAX_FEED_PAGES}",
+            )
             if first_entry is None:
                 first_entry = entry
             page_entries = entries_from_feed(entry.value)
@@ -739,7 +775,8 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                     sort=sort,
                 )
 
-        await _tick(1.0)  # stage done regardless of which exit path was taken
+        # stage done regardless of which exit path was taken
+        await _tick(1.0, "Review collection complete")
 
         return _ReviewCollection(
             reviews=collected,
@@ -757,6 +794,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         },
         icons=[icon],
         timeout=120.0,
+        task=_BACKGROUND_TASK,
     )
     async def digest_app_store_reviews(
         app_id_or_url: str,
@@ -765,6 +803,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         sort: ReviewSort = "most_recent",
         focus: str | None = None,
         ctx: Context = CurrentContext(),
+        progress: Progress = Progress(),
     ) -> DigestReviewsResult:
         """Fetch up to `limit` reviews and compress them into a structured
         digest (themes, complaints, praise, sentiment) via MCP sampling, so
@@ -785,6 +824,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         """
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        await progress.set_total(100)
         # Review harvesting gets the first half of the progress range; LLM
         # digestion (below) gets the second half, so a client watching
         # progress sees continuous movement across both stages instead of
@@ -795,6 +835,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             sort=sort,
             limit=limit,
             ctx=ctx,
+            progress=progress,
             progress_end=50,
         )
         if not collection.reviews:
@@ -807,6 +848,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         prompt = build_digest_prompt(
             ref.app_id, resolved_country, collection.reviews, focus
         )
+        await progress.set_message("Digesting reviews via LLM sampling")
         try:
             sampled = await ctx.sample(
                 messages=prompt,
@@ -826,10 +868,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
 
         warnings = list(collection.warnings)
         text = sampled.text or ""
+        last_progress = 50.0  # matches _collect_reviews's progress_end above
         try:
             digest = parse_digest(text)
         except (ValueError, ValidationError) as first_error:
             await ctx.report_progress(progress=75, total=100)
+            await progress.increment(round(75 - last_progress))
+            await progress.set_message("Retrying after invalid LLM output")
+            last_progress = 75.0
             retry = await ctx.sample(
                 messages=[
                     SamplingMessage(
@@ -857,6 +903,8 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             digest = parse_digest(retry.text or "")
             warnings.append("digest required a retry after invalid LLM output")
         await ctx.report_progress(progress=100, total=100)
+        await progress.increment(round(100 - last_progress))
+        await progress.set_message("Digest complete")
         warnings.append(
             "digest is LLM-generated from the reviews below; quotes may be "
             "translated or paraphrased"
@@ -884,12 +932,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         },
         icons=[icon],
         timeout=60.0,
+        task=_BACKGROUND_TASK,
     )
     async def get_app_store_screenshots(
         app_id_or_url: str,
         country: str | None = None,
         device: Literal["iphone", "ipad"] = "iphone",
         limit: Annotated[int, Field(ge=1, le=8)] = 4,
+        progress: Progress = Progress(),
     ) -> ToolResult:
         """Fetch an app's App Store screenshots as actual images, so you can
         analyze visual positioning, onboarding style, and paywall design
@@ -940,12 +990,18 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             )
 
         urls = urls[:limit]
+        await progress.set_total(len(urls))
 
         async def fetch_image(url: str) -> tuple[bytes, str]:
             response = await http.get(url, follow_redirects=True)
             response.raise_for_status()
             content_type = response.headers.get("content-type", "")
             fmt = "png" if "png" in content_type or url.endswith(".png") else "jpeg"
+            # Downloads run concurrently (asyncio.gather below); increments
+            # are only reported through the Progress dependency here, since
+            # this tool takes no ctx/progressToken - it only matters once a
+            # task-aware client polls a background-executed call.
+            await progress.increment()
             return response.content, fmt
 
         downloads = await asyncio.gather(

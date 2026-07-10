@@ -318,6 +318,73 @@ Dependency Injection and Lifespans docs)
   is the right tool for genuinely per-request or cheaply-recomputed values;
   none of this server's shared infrastructure fits that shape.
 
+### FastMCP `Background Tasks` usage (reviewed 2026-07-10 against FastMCP's
+Background Tasks docs, SEP-1686)
+- **Adopted**: `task=TaskConfig(mode="optional", poll_interval=timedelta(seconds=5))`
+  (the shared `_BACKGROUND_TASK` constant in `server.py`) on the three tools
+  whose work is sequential/blocking rather than a single quick request:
+  `get_app_store_reviews` and `digest_app_store_reviews` (both chain up to
+  `MAX_FEED_PAGES` sequential feed requests via `_collect_reviews`;
+  `digest_app_store_reviews` additionally does an `ctx.sample()` LLM call
+  under a 120s timeout, with a possible one-shot retry), and
+  `get_app_store_screenshots` (concurrent image downloads, but still
+  multi-second wall time). `mode="optional"` is additive: a client that
+  doesn't request a task keeps today's synchronous behavior exactly (see
+  Testing below - no existing test needed to change); a task-aware client
+  gets a task ID back immediately and can poll/await it instead of holding
+  a blocking connection open. The other four tools (`search_app_store`,
+  `get_app_store_app`, `compare_app_store_apps`, `get_app_store_charts`) stay
+  `task=False` (the decorator default) - each does at most one or two
+  concurrent requests, not a sequential chain, so a 25s synchronous timeout
+  is already a reasonable bound.
+- **`fastmcp[tasks]` is a hard dependency, not an optional extra** (unlike
+  the `anthropic`/`openai` extras) - `pyproject.toml`'s core `dependencies`
+  now pin `fastmcp[tasks]>=3`. This is required, not stylistic:
+  `TaskConfig.validate_function` calls `require_docket()` at
+  tool-*registration* time whenever `mode != "forbidden"`, regardless of
+  whether any client ever actually requests a background task - so leaving
+  `docket` as an opt-in extra would crash server startup for every default
+  `uvx appstore-mcp` install the moment any tool sets `task=`.
+- **Progress reporting now goes through both `ctx.report_progress` (an MCP
+  progress notification gated on a client-supplied `progressToken` - the
+  only channel that reaches a synchronous/immediate-mode call) and the
+  `Progress` dependency (Docket-backed once running as a background task -
+  the only channel a `task=True` caller can observe while polling)** in
+  `_collect_reviews`, `digest_app_store_reviews`, and
+  `get_app_store_screenshots`. Verified directly against the installed
+  `fastmcp` package: outside a Docket worker, `Progress` falls back to
+  `InMemoryProgress`, which never calls `send_progress_notification` - so
+  switching *from* `ctx.report_progress` *to* `Progress` (rather than
+  driving both) would have silently broken progress for every client that
+  doesn't request a task. `ctx.report_progress`'s existing
+  `progress_start`/`progress_end` percentage-scaling design (see `Context`
+  usage above) is unchanged; `Progress.increment()` is fed the same
+  percentage delta on every tick so both channels stay in lockstep, and
+  `Progress.set_message()` carries the same per-page/per-stage text the
+  percentage alone doesn't (e.g. "Fetched review page 3/10",
+  "Retrying after invalid LLM output").
+- **Deliberately not adopted**:
+  - *Redis backend* (`FASTMCP_DOCKET_URL=redis://...`) - the default
+    `memory://` backend is zero-config and exactly fits this project's
+    per-user, single-process `uvx` distribution (see Transport &
+    distribution above: "zero infra"); there's no shared queue across
+    processes to persist, matching the existing "no disk, no Redis"
+    rationale under Caching & politeness.
+  - *Horizontal worker scaling* (`fastmcp tasks worker server.py`) - that
+    CLI adds consumers to a queue shared *across processes*, which only
+    exists with the Redis backend; every `uvx appstore-mcp` invocation is
+    already its own isolated process, so there is no second process that
+    could ever attach to the same queue.
+  - *Server-wide `tasks=True` default* on the `FastMCP(...)` constructor -
+    would force every one of the four fast/single-request tools above to
+    explicitly opt out with `task=False` (per the docs' own warning) for no
+    benefit, since they were never long-running candidates in the first
+    place. Per-tool `task=_BACKGROUND_TASK` is more precise.
+  - *`CurrentDocket()`/`CurrentWorker()`* - no tool needs to schedule
+    follow-up background work or read worker metadata; nothing in this
+    server's five-tool, read-only surface fans out into further async work
+    after a task completes.
+
 ### Testing
 1. **Fixture-based unit tests** (bulk): real recorded responses in
    `tests/fixtures/` (lookup JSON, search JSON, saved App Store HTML, charts page,
