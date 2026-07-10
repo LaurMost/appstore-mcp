@@ -23,6 +23,33 @@ Per release:
    `mcp__appstore__*` tool was really invoked end-to-end (needs a logged-in
    `claude` CLI; costs API tokens).
 
+## MCPB bundle for Claude Desktop (macOS arm64)
+
+`mcpb/build.sh` produces `dist/appstore-mcp.mcpb`, a one-file Claude Desktop
+extension bundling a standalone CPython and all dependencies — end users need
+no Python or uv installed. Keep `version` in `mcpb/manifest.json` in sync with
+the three files listed above.
+
+```sh
+./mcpb/build.sh
+npx @anthropic-ai/mcpb sign dist/appstore-mcp.mcpb   # before distributing
+```
+
+Gotchas the script already guards against:
+
+- Dependencies must be vendored against the *bundled* interpreter
+  (`uv pip install --python mcpb/server/python/bin/python3.13`), not the dev
+  venv — otherwise native wheels (pydantic_core) target the wrong ABI and the
+  server dies on import.
+- The bundle is platform-specific (interpreter + native wheels). Building on
+  another platform produces a bundle for that platform; update
+  `compatibility.platforms` in `mcpb/manifest.json` if that ever changes.
+
+Smoke-test without installing: unzip the `.mcpb` somewhere, then pipe an
+`initialize` request into `server/python/bin/python3.13 -I server/main.py`
+and check the reply — or attach `npx @modelcontextprotocol/inspector` to that
+same command.
+
 ## After first publish: discoverability (optional)
 
 ### MCP Registry (registry.modelcontextprotocol.io)

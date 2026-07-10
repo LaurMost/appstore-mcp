@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "appstore-mcp",
+  "display_name": "App Store Research",
+  "version": "0.1.0",
+  "description": "Live public Apple App Store data for competitor research: search, app profiles, side-by-side comparisons, reviews, and charts.",
+  "author": { "name": "Laurence Mostert" },
+  "homepage": "https://github.com/LaurMost/appstore-mcp",
+  "icon": "icon.png",
+  "server": {
+    "type": "python",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "${__dirname}/server/python/bin/python3.13",
+      "args": ["-I", "${__dirname}/server/main.py"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin"]
+  }
+}

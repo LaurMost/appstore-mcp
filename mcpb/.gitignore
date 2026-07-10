@@ -1,0 +1,5 @@
+server/vendor/
+server/python/
+dist/
+*.mcpb
+icon.png
