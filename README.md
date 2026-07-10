@@ -96,6 +96,24 @@ uv run ruff check .    # lint
 uv run ruff format .   # format (Black-compatible style)
 ```
 
+Some tests assert full response shapes via [inline-snapshot](https://github.com/15r10nk/inline-snapshot).
+After an intentional change to a tool's output shape, regenerate them:
+
+```sh
+uv run pytest --inline-snapshot=fix,create   # then review the diff
+```
+
+Optionally, verify the whole stack through a real MCP client — Claude Code
+driving the local server over stdio against live Apple:
+
+```sh
+uv run python scripts/claude_code_integration_test.py
+```
+
+This is a manual, on-demand check, not part of the default dev loop: it
+requires a logged-in [`claude` CLI](https://code.claude.com) and spends real
+Anthropic API tokens per run.
+
 This project is not affiliated with or endorsed by Apple. "App Store" is a
 trademark of Apple Inc.
 

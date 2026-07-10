@@ -35,6 +35,8 @@ appstore-mcp = "appstore_mcp.server:main"
 
 [dependency-groups]
 dev = [
+    "dirty-equals>=0.11",
+    "inline-snapshot>=0.34.2",
     "mypy>=1.13",
     "pytest>=8",
     "pytest-asyncio>=0.25",
@@ -78,6 +80,15 @@ extend-immutable-calls = [
     "fastmcp.dependencies.Progress",
     "pydantic.Field",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone dev scripts print to stdout by design - the T20 stdout-is-the-
+# JSON-RPC-channel rule only applies to the server package.
+"scripts/*" = ["T20"]
+# inline-snapshot embeds real Apple fixture data verbatim (long description
+# paragraphs -> E501; curly apostrophes in release notes -> RUF001), so those
+# rules don't apply to generated snapshot literals in the test suite.
+"tests/*" = ["E501", "RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

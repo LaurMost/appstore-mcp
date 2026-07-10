@@ -16,7 +16,12 @@ Per release:
    re-tests, and publishes to PyPI via trusted publishing.
 4. Smoke-test the published artifact: `uvx appstore-mcp@latest` in a client,
    or `npx @modelcontextprotocol/inspector uvx appstore-mcp` for a manual
-   pass over how the tools present.
+   pass over how the tools present. To exercise actual tool-*calling* (not just
+   listing/schemas) through a real MCP client, run
+   `uv run python scripts/claude_code_integration_test.py` — it drives the
+   Claude Code CLI against the local server over stdio and asserts an
+   `mcp__appstore__*` tool was really invoked end-to-end (needs a logged-in
+   `claude` CLI; costs API tokens).
 
 ## After first publish: discoverability (optional)
 
