@@ -1,10 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
-
-> **Note:** this repo has no git remote yet. Until the GitHub repo is created
-> and added as `origin`, `gh issue` commands will fail — create the remote
-> first (`gh repo create`).
+Issues and PRDs for this repo live as GitHub issues ([LaurMost/appstore-mcp](https://github.com/LaurMost/appstore-mcp/issues)). Use the `gh` CLI for all operations.
 
 ## Conventions
 
