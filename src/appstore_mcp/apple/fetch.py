@@ -1,13 +1,22 @@
 """Shared HTTP fetch helpers: map Apple/network failures onto our error types."""
 
 import json
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 import httpx
 
 from appstore_mcp.errors import RateLimitedError, UpstreamError
 
-USER_AGENT = "appstore-mcp/0.1.0 (open-source MCP server; +https://pypi.org/project/appstore-mcp/)"
+try:
+    _VERSION = version("appstore-mcp")
+except PackageNotFoundError:  # running from a source tree without install
+    _VERSION = "dev"
+
+USER_AGENT = (
+    f"appstore-mcp/{_VERSION} "
+    f"(open-source MCP server; +https://pypi.org/project/appstore-mcp/)"
+)
 
 
 async def get_text(

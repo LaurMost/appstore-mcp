@@ -6,22 +6,33 @@ from typing import Any
 
 import httpx
 from fastmcp import FastMCP
+from pydantic import ValidationError
 
 from appstore_mcp.apple import charts as charts_mod
+from appstore_mcp.apple import itunes as itunes_mod
 from appstore_mcp.apple import page as page_mod
-from appstore_mcp.apple.charts import ChartName, ChartsClient, chart_url, resolve_genre_id
+from appstore_mcp.apple import reviews as reviews_mod
+from appstore_mcp.apple.charts import (
+    ChartsClient,
+    chart_url,
+    entries_from_chart_feed,
+    resolve_genre_id,
+)
 from appstore_mcp.apple.fetch import USER_AGENT
 from appstore_mcp.apple.ids import parse_app_ref
-from appstore_mcp.apple.itunes import LOOKUP_URL, SEARCH_URL, SOURCE_NAME, ITunesClient
-from appstore_mcp.apple.page import AppPageClient, PageParseError, enrichment_from_html
+from appstore_mcp.apple.itunes import ITunesClient, lookup_url, search_url
 from appstore_mcp.apple.normalize import (
     chart_entry_from_feed,
     profile_from_lookup,
     review_from_feed_entry,
     search_result_from_lookup,
 )
-from appstore_mcp.apple.page import reviews_from_html
-from appstore_mcp.apple import reviews as reviews_mod
+from appstore_mcp.apple.page import (
+    AppPageClient,
+    PageParseError,
+    enrichment_from_html,
+    reviews_from_html,
+)
 from appstore_mcp.apple.reviews import (
     MAX_FEED_PAGES,
     ReviewSort,
@@ -29,9 +40,11 @@ from appstore_mcp.apple.reviews import (
     entries_from_feed,
     review_feed_url,
 )
+from appstore_mcp.cache import TTLCache
 from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
 from appstore_mcp.models import (
     AppError,
+    ChartName,
     ChartsResult,
     CompareAppsResult,
     GetAppResult,
@@ -60,6 +73,16 @@ _COUNTRY_RE = re.compile(r"^[a-zA-Z]{2}$")
 DEFAULT_COUNTRY = "us"
 
 
+async def _reap(task: "asyncio.Task[Any]") -> None:
+    """Cancel an in-flight companion task and retrieve its outcome so the
+    event loop never logs 'exception was never retrieved'."""
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 def _validate_country(country: str) -> str:
     if not _COUNTRY_RE.match(country):
         raise InvalidInputError(
@@ -75,10 +98,11 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             headers={"User-Agent": USER_AGENT},
             timeout=20.0,
         )
-    itunes = ITunesClient(http)
-    app_page = AppPageClient(http)
-    charts = ChartsClient(http)
-    reviews_client = ReviewsClient(http)
+    cache: TTLCache[Any] = TTLCache()  # one cache across all sources
+    itunes = ITunesClient(http, cache)
+    app_page = AppPageClient(http, cache)
+    charts = ChartsClient(http, cache)
+    reviews_client = ReviewsClient(http, cache)
 
     mcp: FastMCP = FastMCP(name="appstore-mcp", instructions=INSTRUCTIONS)
 
@@ -104,22 +128,17 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             search_result_from_lookup(item)
             for item in entry.value.get("results", [])
         ]
-        url = str(
-            httpx.URL(
-                SEARCH_URL,
-                params={
-                    "term": query,
-                    "country": country,
-                    "media": "software",
-                    "limit": limit,
-                },
-            )
-        )
         return SearchAppsResult(
             meta=Meta(country=country, retrieved_at=entry.retrieved_at, fresh=entry.fresh),
             query=query,
             results=results,
-            sources=[Source(name=SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)],
+            sources=[
+                Source(
+                    name=itunes_mod.SOURCE_NAME,
+                    url=search_url(query, country=country, limit=limit),
+                    retrieved_at=entry.retrieved_at,
+                )
+            ],
         )
 
     @mcp.tool(
@@ -156,12 +175,12 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             entry = await lookup_task
         except BaseException:
             if page_task is not None:
-                page_task.cancel()
+                await _reap(page_task)
             raise
         items: list[dict[str, Any]] = entry.value.get("results", [])
         if not items:
             if page_task is not None:
-                page_task.cancel()
+                await _reap(page_task)
             raise AppNotFoundError(ref.app_id, resolved_country)
         item = items[0]
         profile = profile_from_lookup(item)
@@ -169,12 +188,8 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         warnings: list[str] = []
         sources = [
             Source(
-                name=SOURCE_NAME,
-                url=str(
-                    httpx.URL(
-                        LOOKUP_URL, params={"id": ref.app_id, "country": resolved_country}
-                    )
-                ),
+                name=itunes_mod.SOURCE_NAME,
+                url=lookup_url([ref.app_id], country=resolved_country),
                 retrieved_at=entry.retrieved_at,
             )
         ]
@@ -182,7 +197,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             try:
                 page_entry = await page_task
                 enrichment = enrichment_from_html(page_entry.value)
-            except (AppStoreMCPError, PageParseError) as exc:
+            except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(
                     f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
                 )
@@ -230,6 +245,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
 
         errors: list[AppError] = []
         ordered_ids: list[str] = []
+        original_ref: dict[str, str] = {}  # app_id -> value the caller sent
         for value in apps:
             try:
                 ref = parse_app_ref(value)
@@ -238,6 +254,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 continue
             if ref.app_id not in ordered_ids:
                 ordered_ids.append(ref.app_id)
+                original_ref[ref.app_id] = value
 
         if not ordered_ids:
             raise InvalidInputError(
@@ -256,9 +273,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             if item is None:
                 errors.append(
                     AppError(
-                        app=app_id,
-                        reason=f"not found in storefront '{country}' - it may "
-                        f"exist in another country",
+                        app=original_ref[app_id],
+                        reason=f"app {app_id} not found in storefront '{country}' "
+                        f"- it may exist in another country",
                     )
                 )
                 continue
@@ -276,9 +293,6 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             if errors
             else []
         )
-        url = str(
-            httpx.URL(LOOKUP_URL, params={"id": ",".join(ordered_ids), "country": country})
-        )
         return CompareAppsResult(
             meta=Meta(
                 country=country,
@@ -288,7 +302,13 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             ),
             apps=profiles,
             errors=errors,
-            sources=[Source(name=SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)],
+            sources=[
+                Source(
+                    name=itunes_mod.SOURCE_NAME,
+                    url=lookup_url(ordered_ids, country=country),
+                    retrieved_at=entry.retrieved_at,
+                )
+            ],
         )
 
     @mcp.tool(
@@ -314,13 +334,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         entry = await charts.fetch(
             country=country, chart=chart, limit=limit, genre_id=genre_id
         )
-        feed = entry.value.get("feed") or {}
-        raw_entries = feed.get("entry") or []
-        if isinstance(raw_entries, dict):  # Apple returns a bare object for limit=1
-            raw_entries = [raw_entries]
         entries = [
             chart_entry_from_feed(item, rank=index)
-            for index, item in enumerate(raw_entries, start=1)
+            for index, item in enumerate(entries_from_chart_feed(entry.value), start=1)
         ]
         url = chart_url(country, chart, limit=limit, genre_id=genre_id)
         warnings = [
@@ -395,6 +411,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 break
         collected = collected[:limit]
 
+        assert first_entry is not None
+        retrieved_at = first_entry.retrieved_at
+        fresh = first_entry.fresh
         if not collected:
             warnings.append(
                 f"the review feed returned no reviews for app {ref.app_id} in "
@@ -413,15 +432,17 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                         retrieved_at=page_entry.retrieved_at,
                     )
                 )
-            except (AppStoreMCPError, PageParseError) as exc:
+                # The page, not the empty feed, is what served these reviews.
+                retrieved_at = page_entry.retrieved_at
+                fresh = page_entry.fresh
+            except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(f"page fallback also failed ({exc})")
 
-        assert first_entry is not None
         return ReviewsResult(
             meta=Meta(
                 country=resolved_country,
-                retrieved_at=first_entry.retrieved_at,
-                fresh=first_entry.fresh,
+                retrieved_at=retrieved_at,
+                fresh=fresh,
                 warnings=warnings,
             ),
             app_id=ref.app_id,

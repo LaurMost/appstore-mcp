@@ -14,9 +14,13 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+ChartName = Literal["top-free", "top-paid", "top-grossing"]
+
+
 class Meta(BaseModel):
     store: Literal["apple_app_store"] = "apple_app_store"
     country: str
+    language: str | None = None
     retrieved_at: datetime = Field(default_factory=utcnow)
     fresh: bool = True
     warnings: list[str] = Field(default_factory=list)
@@ -133,7 +137,7 @@ class ReviewsResult(BaseModel):
 
 class ChartsResult(BaseModel):
     meta: Meta
-    chart: str
+    chart: ChartName
     category: str | None = None
     entries: list[ChartEntry]
     sources: list[Source]

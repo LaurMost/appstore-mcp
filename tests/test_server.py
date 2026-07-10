@@ -57,7 +57,10 @@ async def test_search_tool_returns_slim_results(server_client: Client) -> None:
     assert set(first) >= {"app_id", "name", "developer", "rating", "price"}
     # Slim shape: no description or screenshots in search results.
     assert "description" not in first
-    assert data["sources"][0]["name"] == "apple_itunes_api"
+    source = data["sources"][0]
+    assert source["name"] == "apple_itunes_api"
+    # The reported URL must reproduce the actual request, entity param included.
+    assert "entity=software" in source["url"]
 
 
 async def test_get_app_returns_full_profile_without_raw(server_client: Client) -> None:

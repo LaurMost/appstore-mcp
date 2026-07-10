@@ -6,17 +6,18 @@ genre filtering). Apple offers no uptime guarantee, so callers surface a
 best-effort warning with every response.
 """
 
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 
 from appstore_mcp.apple.fetch import get_json
 from appstore_mcp.cache import CacheEntry, TTLCache
 from appstore_mcp.errors import InvalidInputError
+from appstore_mcp.models import ChartName
+
+__all__ = ["ChartName", "ChartsClient", "chart_url", "resolve_genre_id", "entries_from_chart_feed"]
 
 SOURCE_NAME = "apple_itunes_rss_charts"
-
-ChartName = Literal["top-free", "top-paid", "top-grossing"]
 
 CHART_FEEDS: dict[str, str] = {
     "top-free": "topfreeapplications",
@@ -77,6 +78,14 @@ def chart_url(country: str, chart: str, *, limit: int, genre_id: str | None) -> 
     feed = CHART_FEEDS[chart]
     genre_part = f"/genre={genre_id}" if genre_id else ""
     return f"https://itunes.apple.com/{country}/rss/{feed}/limit={limit}{genre_part}/json"
+
+
+def entries_from_chart_feed(payload: Any) -> list[dict[str, Any]]:
+    feed = payload.get("feed") if isinstance(payload, dict) else None
+    entries = feed.get("entry") if isinstance(feed, dict) else None
+    if isinstance(entries, dict):  # Apple returns a bare object for limit=1
+        entries = [entries]
+    return entries if isinstance(entries, list) else []
 
 
 class ChartsClient:

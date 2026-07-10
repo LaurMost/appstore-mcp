@@ -65,6 +65,17 @@ async def test_compare_reports_partial_failures_in_band() -> None:
     assert data["meta"]["warnings"], "partial failure surfaces a warning"
 
 
+async def test_compare_not_found_error_reports_the_value_the_caller_sent() -> None:
+    client = Client(create_server(http=httpx.AsyncClient(transport=lookup_transport())))
+    missing_url = "https://apps.apple.com/us/app/gone/id111111111"
+    async with client:
+        result = await client.call_tool(
+            "compare_app_store_apps", {"apps": ["570060128", missing_url]}
+        )
+    errors = result.structured_content["errors"]
+    assert errors[0]["app"] == missing_url
+
+
 async def test_compare_raises_only_when_every_app_fails() -> None:
     client = Client(create_server(http=httpx.AsyncClient(transport=lookup_transport())))
     async with client:
