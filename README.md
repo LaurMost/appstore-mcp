@@ -30,6 +30,9 @@ Requires [uv](https://docs.astral.sh/uv/). Add to your MCP client config:
 - **Claude Desktop**: add the snippet above to `claude_desktop_config.json`
 - **Cursor**: add the snippet above to `~/.cursor/mcp.json`
 
+If your MCP client can't find `uvx`, use the absolute path from `which uvx` as
+the `command`.
+
 ## Tools
 
 | Tool | What it does |

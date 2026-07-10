@@ -471,7 +471,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
 
 
 def main() -> None:
-    create_server().run()
+    # Stdio transport: stdout carries JSON-RPC only; never print to stdout here
+    # (fastmcp's own banner and logging go to stderr).
+    create_server().run(transport="stdio")
 
 
 if __name__ == "__main__":
