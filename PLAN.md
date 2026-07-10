@@ -59,6 +59,18 @@ Design rules:
   whole-function description.
 - Server-level `instructions`: public-data-only scope, no downloads/revenue,
   **apps are per-storefront — pass `country`**.
+- Server-level `website_url` points at the GitHub repo (`[project.urls].Homepage`
+  in `pyproject.toml`, kept in sync manually).
+- Server, every tool, and the one prompt all share a single `icons=[Icon(...)]`
+  (FastMCP 2.13.0+/`mcp.types.Icon`) — one brand icon reused everywhere, not
+  distinct icons per tool, since this is one small server rather than a
+  multi-product suite. The icon lives at `src/appstore_mcp/assets/icon.svg`
+  (packaged by hatchling automatically — verified via `uv build --wheel`) and
+  is loaded once in `create_server()` via `_load_icon()`, which embeds it as a
+  `data:image/svg+xml;base64,...` URI rather than a hosted URL — this project
+  ships stdio-only via `uvx` with no domain of its own to host a static asset
+  on, so a data URI (not a `https://` `src`) is the correct fit per FastMCP's
+  Icons docs.
 
 ### Response shape — compact by default, raw opt-in
 The original "raw first, compact second" plan is **inverted**: raw iTunes blobs

@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from importlib import resources
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -15,7 +16,7 @@ from fastmcp.server.context import Context
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import Image
-from mcp.types import SamplingMessage, TextContent
+from mcp.types import Icon, SamplingMessage, TextContent
 from pydantic import Field, ValidationError
 
 from appstore_mcp.apple import charts as charts_mod
@@ -132,6 +133,21 @@ _COUNTRY_RE = re.compile(r"^[a-zA-Z]{2}$")
 
 DEFAULT_COUNTRY = "us"
 
+WEBSITE_URL = "https://github.com/LaurMost/appstore-mcp"
+
+
+def _load_icon() -> Icon:
+    """Embed the packaged SVG icon as a data URI.
+
+    A data URI (rather than a hosted URL) matches how this project ships:
+    stdio-only via `uvx`, with no domain of its own to host a static asset on.
+    """
+    svg_bytes = (
+        resources.files("appstore_mcp").joinpath("assets/icon.svg").read_bytes()
+    )
+    data_uri = Image(data=svg_bytes, format="svg+xml").to_data_uri()
+    return Icon(src=data_uri, mimeType="image/svg+xml", sizes=["any"])
+
 
 async def _reap(task: "asyncio.Task[Any]") -> None:
     """Cancel an in-flight companion task and retrieve its outcome so the
@@ -165,9 +181,12 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     reviews_client = ReviewsClient(http, cache)
 
     sampling_handler = _sampling_fallback_handler()
+    icon = _load_icon()
     mcp: FastMCP = FastMCP(
         name="appstore-mcp",
         instructions=INSTRUCTIONS,
+        website_url=WEBSITE_URL,
+        icons=[icon],
         sampling_handler=sampling_handler,
         sampling_handler_behavior="fallback",
     )
@@ -179,6 +198,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "idempotentHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=25.0,
     )
     async def search_app_store(
@@ -221,6 +241,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "idempotentHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=25.0,
     )
     async def get_app_store_app(
@@ -328,6 +349,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "idempotentHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=25.0,
     )
     async def compare_app_store_apps(
@@ -423,6 +445,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "idempotentHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=25.0,
     )
     async def get_app_store_charts(
@@ -488,6 +511,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "idempotentHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=30.0,
     )
     async def get_app_store_reviews(
@@ -639,6 +663,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "readOnlyHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=120.0,
     )
     async def digest_app_store_reviews(
@@ -765,6 +790,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             "idempotentHint": True,
             "openWorldHint": True,
         },
+        icons=[icon],
         timeout=60.0,
     )
     async def get_app_store_screenshots(
@@ -865,7 +891,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             },
         )
 
-    @mcp.prompt
+    @mcp.prompt(icons=[icon])
     def compare_competitors(apps: str, country: str = DEFAULT_COUNTRY) -> str:
         """Run a competitor comparison for the given apps on one storefront.
 
