@@ -9,12 +9,18 @@ from appstore_mcp.server import create_server
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def apple_transport() -> httpx.MockTransport:
+def apple_transport(page_status: int = 200) -> httpx.MockTransport:
     """Route requests to the recorded fixture matching the real Apple endpoint."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         params = dict(request.url.params)
+        if request.url.host == "apps.apple.com":
+            if page_status != 200:
+                return httpx.Response(page_status)
+            return httpx.Response(
+                200, content=(FIXTURES / "page_duolingo_us.html").read_bytes()
+            )
         if path == "/search":
             return httpx.Response(
                 200, content=(FIXTURES / "search_language_learning_us.json").read_bytes()
@@ -83,6 +89,53 @@ async def test_get_app_uses_country_from_url(server_client: Client) -> None:
             {"app_id_or_url": "https://apps.apple.com/de/app/x/id570060128"},
         )
     assert result.structured_content["meta"]["country"] == "de"
+
+
+async def test_get_app_merges_page_enrichment_by_default(server_client: Client) -> None:
+    async with server_client as client:
+        result = await client.call_tool(
+            "get_app_store_app", {"app_id_or_url": "570060128"}
+        )
+    data = result.structured_content
+    app = data["app"]
+    assert app["subtitle"] == "Languages, Math, Music & Chess"
+    assert app["has_iap"] is True
+    assert app["privacy"] is not None
+    assert data["meta"]["warnings"] == []
+    assert {s["name"] for s in data["sources"]} == {
+        "apple_itunes_api",
+        "apple_app_store_page",
+    }
+
+
+async def test_get_app_page_failure_degrades_with_warning() -> None:
+    http = httpx.AsyncClient(transport=apple_transport(page_status=500))
+    async with Client(create_server(http=http)) as client:
+        result = await client.call_tool(
+            "get_app_store_app", {"app_id_or_url": "570060128"}
+        )
+    data = result.structured_content
+    assert data["app"]["app_id"] == "570060128"
+    assert data["app"]["subtitle"] is None
+    assert data["app"]["has_iap"] is None
+    assert any("enrichment" in w for w in data["meta"]["warnings"])
+
+
+async def test_get_app_can_skip_page_enrichment() -> None:
+    hits: list[str] = []
+    base = apple_transport()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits.append(request.url.host)
+        return base.handler(request)  # type: ignore[attr-defined]
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with Client(create_server(http=http)) as client:
+        await client.call_tool(
+            "get_app_store_app",
+            {"app_id_or_url": "570060128", "include_page_data": False},
+        )
+    assert "apps.apple.com" not in hits
 
 
 async def test_get_app_not_found_is_agent_recoverable_error(server_client: Client) -> None:

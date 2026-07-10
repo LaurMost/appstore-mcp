@@ -1,14 +1,17 @@
 """FastMCP server: thin tools over the apple/ clients."""
 
+import asyncio
 import re
 from typing import Any
 
 import httpx
 from fastmcp import FastMCP
 
+from appstore_mcp.apple import page as page_mod
 from appstore_mcp.apple.fetch import USER_AGENT
 from appstore_mcp.apple.ids import parse_app_ref
 from appstore_mcp.apple.itunes import LOOKUP_URL, SEARCH_URL, SOURCE_NAME, ITunesClient
+from appstore_mcp.apple.page import AppPageClient, PageParseError, enrichment_from_html
 from appstore_mcp.apple.normalize import profile_from_lookup, search_result_from_lookup
 from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
 from appstore_mcp.models import (
@@ -54,6 +57,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             timeout=20.0,
         )
     itunes = ITunesClient(http)
+    app_page = AppPageClient(http)
 
     mcp: FastMCP = FastMCP(name="appstore-mcp", instructions=INSTRUCTIONS)
 
@@ -107,28 +111,81 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     async def get_app_store_app(
         app_id_or_url: str,
         country: str | None = None,
+        include_page_data: bool = True,
         include_raw: bool = False,
     ) -> GetAppResult:
         """Fetch the full public App Store profile for one app by numeric ID or
-        apps.apple.com URL. Set include_raw=true to also get Apple's unmodified
-        lookup payload (large - only when normalized fields are not enough)."""
+        apps.apple.com URL. Page-sourced fields (subtitle, has_iap, privacy) are
+        best-effort; set include_page_data=false to skip that second request.
+        Set include_raw=true to also get Apple's unmodified lookup payload
+        (large - only when normalized fields are not enough)."""
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
-        entry = await itunes.lookup([ref.app_id], country=resolved_country)
+
+        lookup_task = asyncio.create_task(
+            itunes.lookup([ref.app_id], country=resolved_country)
+        )
+        page_task = (
+            asyncio.create_task(app_page.fetch_html(ref.app_id, country=resolved_country))
+            if include_page_data
+            else None
+        )
+
+        try:
+            entry = await lookup_task
+        except BaseException:
+            if page_task is not None:
+                page_task.cancel()
+            raise
         items: list[dict[str, Any]] = entry.value.get("results", [])
         if not items:
+            if page_task is not None:
+                page_task.cancel()
             raise AppNotFoundError(ref.app_id, resolved_country)
         item = items[0]
         profile = profile_from_lookup(item)
-        url = str(httpx.URL(LOOKUP_URL, params={"id": ref.app_id, "country": resolved_country}))
+
+        warnings: list[str] = []
+        sources = [
+            Source(
+                name=SOURCE_NAME,
+                url=str(
+                    httpx.URL(
+                        LOOKUP_URL, params={"id": ref.app_id, "country": resolved_country}
+                    )
+                ),
+                retrieved_at=entry.retrieved_at,
+            )
+        ]
+        if page_task is not None:
+            try:
+                page_entry = await page_task
+                enrichment = enrichment_from_html(page_entry.value)
+            except (AppStoreMCPError, PageParseError) as exc:
+                warnings.append(
+                    f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
+                )
+            else:
+                profile.subtitle = enrichment.subtitle
+                profile.has_iap = enrichment.has_iap
+                profile.privacy = enrichment.privacy
+                sources.append(
+                    Source(
+                        name=page_mod.SOURCE_NAME,
+                        url=page_mod.page_url(ref.app_id, resolved_country),
+                        retrieved_at=page_entry.retrieved_at,
+                    )
+                )
+
         return GetAppResult(
             meta=Meta(
                 country=resolved_country,
                 retrieved_at=entry.retrieved_at,
                 fresh=entry.fresh,
+                warnings=warnings,
             ),
             app=profile,
-            sources=[Source(name=SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)],
+            sources=sources,
             raw={"itunes_lookup": item} if include_raw else None,
         )
 
