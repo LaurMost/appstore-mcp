@@ -106,6 +106,17 @@ fastmcp run             # run the server standalone (stdio)
 fastmcp dev http.fastmcp.json  # same, but over HTTP on localhost:8000
 ```
 
+Want a scriptable CLI instead of an MCP client? `fastmcp generate-cli`
+connects to a *running* server and writes a standalone typed CLI (plus an
+agent-ready `SKILL.md`) with one subcommand per tool - it queries over a
+live connection, so a `fastmcp.json`/stdio target doesn't work here; start
+the HTTP variant first, then point it at that:
+
+```sh
+fastmcp run http.fastmcp.json &
+fastmcp generate-cli http://localhost:8000/mcp/ cli.py
+```
+
 This is a local-iteration convenience only — the published package (`uvx
 appstore-mcp`) always runs over stdio via its own `main()` entrypoint,
 regardless of what's declared here.
