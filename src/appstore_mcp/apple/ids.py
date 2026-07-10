@@ -10,6 +10,22 @@ _URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_COUNTRY_RE = re.compile(r"^[a-zA-Z]{2}$")
+
+
+def validate_country(country: str) -> str:
+    """Validate a caller-supplied storefront code, lowercasing it on success.
+
+    Shared by every tool that takes a `country` param - the one country-code
+    check all of them need.
+    """
+    if not _COUNTRY_RE.match(country):
+        raise InvalidInputError(
+            f"Invalid country {country!r}. Pass a two-letter ISO 3166-1 code "
+            f"like 'us', 'de', or 'jp'."
+        )
+    return country.lower()
+
 
 @dataclass(frozen=True)
 class AppRef:

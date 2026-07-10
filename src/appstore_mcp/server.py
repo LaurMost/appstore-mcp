@@ -1,13 +1,18 @@
-"""FastMCP server: thin tools over the apple/ clients."""
+"""FastMCP server: thin tools over the apple/ clients.
 
-import asyncio
-import contextlib
+Server construction and MCP wire-shaping only. Each tool's orchestration body
+lives in `appstore_mcp.tools.*`; the 3 ctx-free tools delegate straight to
+their `tools/` function, and the 4 ctx-using ones get a thin wrapper here that
+unpacks FastMCP's request-scoped `Context`/`Progress` into the narrow
+`runtime` protocols (`Warner`/`Sampler`/`DualChannelProgressReporter`) before
+delegating. Icon loading, the sampling fallback handler, and the middleware
+classes stay here too - all server wiring, not orchestration.
+"""
+
 import logging
 import os
-import re
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from importlib import resources
 from typing import Annotated, Any, Literal
 
@@ -23,67 +28,37 @@ from fastmcp.server.tasks import TaskConfig
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import Image
-from mcp.types import Icon, SamplingMessage, TextContent
-from pydantic import Field, ValidationError
+from mcp.types import Icon, TextContent
+from pydantic import Field
 
-from appstore_mcp.apple import charts as charts_mod
-from appstore_mcp.apple import itunes as itunes_mod
-from appstore_mcp.apple import page as page_mod
-from appstore_mcp.apple import reviews as reviews_mod
-from appstore_mcp.apple.charts import (
-    ChartsClient,
-    chart_url,
-    entries_from_chart_feed,
-    resolve_genre_id,
-)
+from appstore_mcp.apple.charts import ChartsClient
 from appstore_mcp.apple.fetch import USER_AGENT
-from appstore_mcp.apple.ids import parse_app_ref
-from appstore_mcp.apple.itunes import ITunesClient, lookup_url, search_url
-from appstore_mcp.apple.normalize import (
-    chart_entry_from_feed,
-    profile_from_lookup,
-    review_from_feed_entry,
-    search_result_from_lookup,
-)
-from appstore_mcp.apple.page import (
-    AppPageClient,
-    PageParseError,
-    enrichment_from_html,
-    reviews_from_html,
-    screenshot_urls_from_html,
-)
-from appstore_mcp.apple.reviews import (
-    MAX_FEED_PAGES,
-    ReviewsClient,
-    ReviewSort,
-    entries_from_feed,
-    review_feed_url,
-)
+from appstore_mcp.apple.itunes import ITunesClient
+from appstore_mcp.apple.page import AppPageClient
+from appstore_mcp.apple.reviews import ReviewsClient, ReviewSort
 from appstore_mcp.cache import TTLCache
-from appstore_mcp.digest import DIGEST_SYSTEM_PROMPT, build_digest_prompt, parse_digest
-from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
+from appstore_mcp.errors import AppStoreMCPError
 from appstore_mcp.models import (
-    AppError,
     ChartName,
     ChartsResult,
     CompareAppsResult,
     DigestReviewsResult,
     GetAppResult,
-    Meta,
-    Review,
     ReviewsResult,
     SearchAppsResult,
-    Source,
 )
-
-
-@dataclass
-class _ReviewCollection:
-    reviews: list[Review]
-    sources: list[Source]
-    warnings: list[str]
-    retrieved_at: datetime
-    fresh: bool
+from appstore_mcp.runtime import DualChannelProgressReporter
+from appstore_mcp.tools.app import get_app_store_app as _get_app_store_app
+from appstore_mcp.tools.charts import get_app_store_charts as _get_app_store_charts
+from appstore_mcp.tools.compare import compare_app_store_apps as _compare_app_store_apps
+from appstore_mcp.tools.reviews import (
+    digest_app_store_reviews as _digest_app_store_reviews,
+)
+from appstore_mcp.tools.reviews import get_app_store_reviews as _get_app_store_reviews
+from appstore_mcp.tools.screenshots import (
+    get_app_store_screenshots as _get_app_store_screenshots,
+)
+from appstore_mcp.tools.search import search_app_store as _search_app_store
 
 
 def _sampling_fallback_handler() -> Any | None:
@@ -137,8 +112,6 @@ without loading them all (uses MCP sampling). get_app_store_screenshots
 returns actual screenshot images for visual analysis.
 """
 
-_COUNTRY_RE = re.compile(r"^[a-zA-Z]{2}$")
-
 DEFAULT_COUNTRY = "us"
 
 WEBSITE_URL = "https://github.com/LaurMost/appstore-mcp"
@@ -168,50 +141,19 @@ def _load_icon() -> Icon:
     return Icon(src=data_uri, mimeType="image/png", sizes=["128x128"])
 
 
-async def _reap(task: "asyncio.Task[Any]") -> None:
-    """Cancel an in-flight companion task and retrieve its outcome so the
-    event loop never logs 'exception was never retrieved'."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await task
-
-
-def _validate_country(country: str) -> str:
-    if not _COUNTRY_RE.match(country):
-        raise InvalidInputError(
-            f"Invalid country {country!r}. Pass a two-letter ISO 3166-1 code "
-            f"like 'us', 'de', or 'jp'."
-        )
-    return country.lower()
-
-
-async def _log_fallback_failure(
-    ctx: Context, message: str, exc: Exception, **fields: Any
-) -> None:
-    """Shared shape for the two deep-fallback-failure warnings (page
-    enrichment in get_app_store_app; page fallback in _collect_reviews):
-    mirrors the exception to the client/local log with a consistent
-    structured `extra` payload, alongside (not instead of) the caller's own
-    `meta.warnings` entry.
-    """
-    await ctx.warning(
-        message,
-        extra={**fields, "error_type": type(exc).__name__, "error_message": str(exc)},
-    )
-
-
 class UnexpectedErrorLoggingMiddleware(Middleware):
     """Logs tool-call exceptions that aren't already an agent-facing
     AppStoreMCPError, so upstream format drift (e.g. `apple/normalize.py`
     breaking on a changed Apple response shape) is visible on the server's
-    own log between the weekly live-CI runs (see PLAN.md's "Testing"
-    section) instead of silently surfacing as a bare, untraced error.
+    own log between the weekly live-CI runs (see AGENTS.md's "Testing"
+    note) instead of silently surfacing as a bare, untraced error.
 
     AppStoreMCPError (and subclasses - AppNotFoundError, InvalidInputError,
     RateLimitedError, UpstreamError) are deliberately excluded: those are
-    the expected "tool error" tier from PLAN.md's failure-semantics design,
-    already written for agent recovery - logging every not-found/rate-limit
-    call at ERROR level would just be noise, not a signal.
+    the expected "tool error" tier from the failure-semantics design
+    (docs/adr/0006-two-tier-failure-semantics.md), already written for agent
+    recovery - logging every not-found/rate-limit call at ERROR level would
+    just be noise, not a signal.
 
     Never transforms or swallows the exception (per FastMCP's "log and
     re-raise" guidance for custom middleware error handling) - only adds a
@@ -314,25 +256,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
             limit: Max results to return (1-50).
         """
-        country = _validate_country(country)
-        entry = await itunes.search(query, country=country, limit=limit)
-        results = [
-            search_result_from_lookup(item) for item in entry.value.get("results", [])
-        ]
-        return SearchAppsResult(
-            meta=Meta(
-                country=country, retrieved_at=entry.retrieved_at, fresh=entry.fresh
-            ),
-            query=query,
-            results=results,
-            sources=[
-                Source(
-                    name=itunes_mod.SOURCE_NAME,
-                    url=search_url(query, country=country, limit=limit),
-                    retrieved_at=entry.retrieved_at,
-                )
-            ],
-        )
+        return await _search_app_store(itunes, query, country=country, limit=limit)
 
     @mcp.tool(
         annotations={
@@ -367,80 +291,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             include_raw: Also return Apple's unmodified lookup payload under
                 `raw` (large - only when normalized fields are not enough).
         """
-        ref = parse_app_ref(app_id_or_url)
-        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
-
-        lookup_task = asyncio.create_task(
-            itunes.lookup([ref.app_id], country=resolved_country)
-        )
-        page_task = (
-            asyncio.create_task(
-                app_page.fetch_html(ref.app_id, country=resolved_country)
-            )
-            if include_page_data
-            else None
-        )
-
-        try:
-            entry = await lookup_task
-        except BaseException:
-            if page_task is not None:
-                await _reap(page_task)
-            raise
-        items: list[dict[str, Any]] = entry.value.get("results", [])
-        if not items:
-            if page_task is not None:
-                await _reap(page_task)
-            raise AppNotFoundError(ref.app_id, resolved_country)
-        item = items[0]
-        profile = profile_from_lookup(item)
-
-        warnings: list[str] = []
-        sources = [
-            Source(
-                name=itunes_mod.SOURCE_NAME,
-                url=lookup_url([ref.app_id], country=resolved_country),
-                retrieved_at=entry.retrieved_at,
-            )
-        ]
-        if page_task is not None:
-            try:
-                page_entry = await page_task
-                enrichment = enrichment_from_html(page_entry.value)
-            except (AppStoreMCPError, PageParseError, ValidationError) as exc:
-                warnings.append(
-                    f"page enrichment failed; subtitle/has_iap/privacy "
-                    f"unavailable ({exc})"
-                )
-                await _log_fallback_failure(
-                    ctx,
-                    f"page enrichment failed for app {ref.app_id}: {exc}",
-                    exc,
-                    app_id=ref.app_id,
-                    country=resolved_country,
-                )
-            else:
-                profile.subtitle = enrichment.subtitle
-                profile.has_iap = enrichment.has_iap
-                profile.privacy = enrichment.privacy
-                sources.append(
-                    Source(
-                        name=page_mod.SOURCE_NAME,
-                        url=page_mod.page_url(ref.app_id, resolved_country),
-                        retrieved_at=page_entry.retrieved_at,
-                    )
-                )
-
-        return GetAppResult(
-            meta=Meta(
-                country=resolved_country,
-                retrieved_at=entry.retrieved_at,
-                fresh=entry.fresh,
-                warnings=warnings,
-            ),
-            app=profile,
-            sources=sources,
-            raw={"itunes_lookup": item} if include_raw else None,
+        return await _get_app_store_app(
+            itunes,
+            app_page,
+            app_id_or_url,
+            country=country,
+            include_page_data=include_page_data,
+            include_raw=include_raw,
+            warner=ctx.warning,
         )
 
     @mcp.tool(
@@ -467,80 +325,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             country: ISO 3166-1 alpha-2 storefront all apps are compared on,
                 e.g. 'us', 'de', 'jp'. One call always uses a single storefront.
         """
-        country = _validate_country(country)
-        if not apps:
-            raise InvalidInputError(
-                "Pass at least one app ID or App Store URL in `apps`."
-            )
-
-        errors: list[AppError] = []
-        ordered_ids: list[str] = []
-        original_ref: dict[str, str] = {}  # app_id -> value the caller sent
-        for value in apps:
-            try:
-                ref = parse_app_ref(value)
-            except InvalidInputError as exc:
-                errors.append(AppError(app=value, reason=str(exc)))
-                continue
-            if ref.app_id not in ordered_ids:
-                ordered_ids.append(ref.app_id)
-                original_ref[ref.app_id] = value
-
-        if not ordered_ids:
-            raise InvalidInputError(
-                "None of the provided values could be parsed as an app ID or "
-                "App Store URL."
-            )
-
-        entry = await itunes.lookup(ordered_ids, country=country)
-        by_id = {
-            str(item.get("trackId")): item for item in entry.value.get("results", [])
-        }
-        profiles = []
-        for app_id in ordered_ids:
-            item = by_id.get(app_id)
-            if item is None:
-                errors.append(
-                    AppError(
-                        app=original_ref[app_id],
-                        reason=f"app {app_id} not found in storefront '{country}' "
-                        f"- it may exist in another country",
-                    )
-                )
-                continue
-            profiles.append(profile_from_lookup(item))
-
-        if not profiles:
-            raise AppStoreMCPError(
-                f"None of the requested apps could be fetched in storefront "
-                f"'{country}': " + "; ".join(f"{e.app}: {e.reason}" for e in errors)
-            )
-
-        warnings = (
-            [
-                f"{len(errors)} of {len(apps)} requested apps could not be "
-                f"fetched; see errors"
-            ]
-            if errors
-            else []
-        )
-        return CompareAppsResult(
-            meta=Meta(
-                country=country,
-                retrieved_at=entry.retrieved_at,
-                fresh=entry.fresh,
-                warnings=warnings,
-            ),
-            apps=profiles,
-            errors=errors,
-            sources=[
-                Source(
-                    name=itunes_mod.SOURCE_NAME,
-                    url=lookup_url(ordered_ids, country=country),
-                    retrieved_at=entry.retrieved_at,
-                )
-            ],
-        )
+        return await _compare_app_store_apps(itunes, apps, country=country)
 
     @mcp.tool(
         annotations={
@@ -574,42 +359,8 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 travel, utilities, weather. Omit for the overall chart.
             limit: Max entries to return (1-100).
         """
-        country = _validate_country(country)
-        genre_id = resolve_genre_id(category) if category else None
-        entry = await charts.fetch(
-            country=country, chart=chart, limit=limit, genre_id=genre_id
-        )
-        entries = [
-            chart_entry_from_feed(item, rank=index)
-            for index, item in enumerate(entries_from_chart_feed(entry.value), start=1)
-        ]
-        url = chart_url(country, chart, limit=limit, genre_id=genre_id)
-        warnings = [
-            "chart data comes from an undocumented Apple RSS feed and may "
-            "change or break without notice"
-        ]
-        if not entries:
-            warnings.append(
-                f"the feed returned no entries for chart='{chart}' "
-                f"category={category!r} in storefront '{country}'"
-            )
-        return ChartsResult(
-            meta=Meta(
-                country=country,
-                retrieved_at=entry.retrieved_at,
-                fresh=entry.fresh,
-                warnings=warnings,
-            ),
-            chart=chart,
-            category=category,
-            entries=entries,
-            sources=[
-                Source(
-                    name=charts_mod.SOURCE_NAME,
-                    url=url,
-                    retrieved_at=entry.retrieved_at,
-                )
-            ],
+        return await _get_app_store_charts(
+            charts, country=country, chart=chart, category=category, limit=limit
         )
 
     @mcp.tool(
@@ -646,149 +397,17 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 feed at ~500 per storefront regardless of this value).
             sort: 'most_recent' or 'most_helpful'.
         """
-        ref = parse_app_ref(app_id_or_url)
-        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
         await progress.set_total(100)
-        collection = await _collect_reviews(
-            ref.app_id,
-            country=resolved_country,
-            sort=sort,
+        reporter = DualChannelProgressReporter(ctx, progress)
+        return await _get_app_store_reviews(
+            reviews_client,
+            app_page,
+            app_id_or_url,
+            country=country,
             limit=limit,
-            ctx=ctx,
-            progress=progress,
-        )
-        return ReviewsResult(
-            meta=Meta(
-                country=resolved_country,
-                retrieved_at=collection.retrieved_at,
-                fresh=collection.fresh,
-                warnings=collection.warnings,
-            ),
-            app_id=ref.app_id,
-            reviews=collection.reviews,
-            sources=collection.sources,
-        )
-
-    async def _collect_reviews(
-        app_id: str,
-        *,
-        country: str,
-        sort: ReviewSort,
-        limit: int,
-        ctx: Context,
-        progress: Progress,
-        progress_start: float = 0,
-        progress_end: float = 100,
-    ) -> _ReviewCollection:
-        """Shared review harvesting: paginated feed, page fallback on empty.
-
-        Progress is reported as a percentage of `total=100`, scaled into
-        [progress_start, progress_end] so a caller doing further work
-        afterwards (digest_app_store_reviews's LLM sampling stage) can
-        reserve the remainder of the 0-100 range for its own progress. A
-        terminal tick at progress_end is always emitted before returning,
-        regardless of which exit path below is taken (full MAX_FEED_PAGES
-        pages, an early break once `limit` is satisfied, or the page
-        fallback succeeding/failing) - otherwise a client's progress
-        indicator can stall below 100% with no "done" signal for this stage.
-
-        Every tick reports through both `ctx.report_progress` (an MCP
-        progress notification, delivered when the *client* supplied a
-        progressToken - the only channel that reaches a synchronous/
-        immediate-mode call) and the `Progress` dependency (delivered via
-        Docket's execution store when the *client* requested `task=True` -
-        the only channel a background-task caller can poll). Neither alone
-        covers both cases, so both are always driven off the same tick.
-        """
-        span = progress_end - progress_start
-        last_progress = progress_start
-
-        async def _tick(fraction: float, message: str | None = None) -> None:
-            nonlocal last_progress
-            absolute = progress_start + span * fraction
-            await ctx.report_progress(progress=absolute, total=100)
-            delta = round(absolute - last_progress)
-            if delta:
-                await progress.increment(delta)
-            last_progress = absolute
-            if message is not None:
-                await progress.set_message(message)
-
-        collected: list[Review] = []
-        warnings: list[str] = []
-        sources: list[Source] = []
-        first_entry = None
-        for page_number in range(1, MAX_FEED_PAGES + 1):
-            entry = await reviews_client.fetch_page(
-                app_id, country=country, sort=sort, page=page_number
-            )
-            # Best-effort estimate: the loop below may break early once `limit`
-            # is satisfied, so `MAX_FEED_PAGES` is an upper bound, not a promise.
-            await _tick(
-                page_number / MAX_FEED_PAGES,
-                f"Fetched review page {page_number}/{MAX_FEED_PAGES}",
-            )
-            if first_entry is None:
-                first_entry = entry
-            page_entries = entries_from_feed(entry.value)
-            if not page_entries:
-                break
-            sources.append(
-                Source(
-                    name=reviews_mod.SOURCE_NAME,
-                    url=review_feed_url(
-                        app_id, country=country, sort=sort, page=page_number
-                    ),
-                    retrieved_at=entry.retrieved_at,
-                )
-            )
-            collected.extend(review_from_feed_entry(item) for item in page_entries)
-            if len(collected) >= limit:
-                break
-        collected = collected[:limit]
-
-        assert first_entry is not None
-        retrieved_at = first_entry.retrieved_at
-        fresh = first_entry.fresh
-        if not collected:
-            warnings.append(
-                f"the review feed returned no reviews for app {app_id} in "
-                f"storefront '{country}'; falling back to the ~24 "
-                f"'most helpful' reviews rendered on the public App Store page"
-            )
-            try:
-                page_entry = await app_page.fetch_html(app_id, country=country)
-                collected = reviews_from_html(page_entry.value)[:limit]
-                sources.append(
-                    Source(
-                        name=page_mod.SOURCE_NAME,
-                        url=page_mod.page_url(app_id, country),
-                        retrieved_at=page_entry.retrieved_at,
-                    )
-                )
-                # The page, not the empty feed, is what served these reviews.
-                retrieved_at = page_entry.retrieved_at
-                fresh = page_entry.fresh
-            except (AppStoreMCPError, PageParseError, ValidationError) as exc:
-                warnings.append(f"page fallback also failed ({exc})")
-                await _log_fallback_failure(
-                    ctx,
-                    f"review page fallback also failed for app {app_id}: {exc}",
-                    exc,
-                    app_id=app_id,
-                    country=country,
-                    sort=sort,
-                )
-
-        # stage done regardless of which exit path was taken
-        await _tick(1.0, "Review collection complete")
-
-        return _ReviewCollection(
-            reviews=collected,
-            sources=sources,
-            warnings=warnings,
-            retrieved_at=retrieved_at,
-            fresh=fresh,
+            sort=sort,
+            warner=ctx.warning,
+            progress=reporter,
         )
 
     @mcp.tool(
@@ -827,105 +446,19 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             focus: Optional steer for the digest, e.g. 'pricing complaints'
                 or 'onboarding friction'.
         """
-        ref = parse_app_ref(app_id_or_url)
-        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
         await progress.set_total(100)
-        # Review harvesting gets the first half of the progress range; LLM
-        # digestion (below) gets the second half, so a client watching
-        # progress sees continuous movement across both stages instead of
-        # silence during the (often slower) sampling call.
-        collection = await _collect_reviews(
-            ref.app_id,
-            country=resolved_country,
-            sort=sort,
+        reporter = DualChannelProgressReporter(ctx, progress)
+        return await _digest_app_store_reviews(
+            reviews_client,
+            app_page,
+            app_id_or_url,
+            country=country,
             limit=limit,
-            ctx=ctx,
-            progress=progress,
-            progress_end=50,
-        )
-        if not collection.reviews:
-            raise AppStoreMCPError(
-                f"No reviews available to digest for app {ref.app_id} in "
-                f"storefront '{resolved_country}'. Try another country or "
-                f"check the app ID with get_app_store_app."
-            )
-
-        prompt = build_digest_prompt(
-            ref.app_id, resolved_country, collection.reviews, focus
-        )
-        await progress.set_message("Digesting reviews via LLM sampling")
-        try:
-            sampled = await ctx.sample(
-                messages=prompt,
-                system_prompt=DIGEST_SYSTEM_PROMPT,
-                temperature=0.2,
-                max_tokens=2000,
-            )
-        except Exception as exc:
-            raise AppStoreMCPError(
-                f"Review digestion needs LLM sampling, which this MCP client "
-                f"does not support (or it failed: {exc}). Either use "
-                f"get_app_store_reviews to fetch the raw reviews, or run the "
-                f"server with an ANTHROPIC_API_KEY/OPENAI_API_KEY and the "
-                f"matching optional dependency installed to enable the "
-                f"server-side fallback."
-            ) from exc
-
-        warnings = list(collection.warnings)
-        text = sampled.text or ""
-        last_progress = 50.0  # matches _collect_reviews's progress_end above
-        try:
-            digest = parse_digest(text)
-        except (ValueError, ValidationError) as first_error:
-            await ctx.report_progress(progress=75, total=100)
-            await progress.increment(round(75 - last_progress))
-            await progress.set_message("Retrying after invalid LLM output")
-            last_progress = 75.0
-            retry = await ctx.sample(
-                messages=[
-                    SamplingMessage(
-                        role="user", content=TextContent(type="text", text=prompt)
-                    ),
-                    SamplingMessage(
-                        role="assistant",
-                        content=TextContent(type="text", text=text),
-                    ),
-                    SamplingMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text=(
-                                f"That response was invalid ({first_error}). "
-                                f"Reply again with ONLY the corrected JSON object."
-                            ),
-                        ),
-                    ),
-                ],
-                system_prompt=DIGEST_SYSTEM_PROMPT,
-                temperature=0.0,
-                max_tokens=2000,
-            )
-            digest = parse_digest(retry.text or "")
-            warnings.append("digest required a retry after invalid LLM output")
-        await ctx.report_progress(progress=100, total=100)
-        await progress.increment(round(100 - last_progress))
-        await progress.set_message("Digest complete")
-        warnings.append(
-            "digest is LLM-generated from the reviews below; quotes may be "
-            "translated or paraphrased"
-        )
-
-        return DigestReviewsResult(
-            meta=Meta(
-                country=resolved_country,
-                retrieved_at=collection.retrieved_at,
-                fresh=collection.fresh,
-                warnings=warnings,
-            ),
-            app_id=ref.app_id,
-            reviews_considered=len(collection.reviews),
-            digest=digest,
-            sources=collection.sources,
+            sort=sort,
+            focus=focus,
+            sampler=ctx.sample,
+            warner=ctx.warning,
+            progress=reporter,
         )
 
     @mcp.tool(
@@ -944,6 +477,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         country: str | None = None,
         device: Literal["iphone", "ipad"] = "iphone",
         limit: Annotated[int, Field(ge=1, le=8)] = 4,
+        ctx: Context = CurrentContext(),
         progress: Progress = Progress(),
     ) -> ToolResult:
         """Fetch an app's App Store screenshots as actual images, so you can
@@ -959,88 +493,32 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             limit: Max screenshots to return (1-8); each is a full image in
                 context, so keep this small.
         """
-        ref = parse_app_ref(app_id_or_url)
-        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
-        warnings: list[str] = []
-
-        entry = await itunes.lookup([ref.app_id], country=resolved_country)
-        items: list[dict[str, Any]] = entry.value.get("results", [])
-        if not items:
-            raise AppNotFoundError(ref.app_id, resolved_country)
-        key = "screenshotUrls" if device == "iphone" else "ipadScreenshotUrls"
-        urls: list[str] = list(items[0].get(key) or [])
-
-        if not urls:
-            # The lookup API sometimes omits screenshots entirely; the public
-            # page's media shelves carry resizable artwork templates.
-            try:
-                page_entry = await app_page.fetch_html(
-                    ref.app_id, country=resolved_country
-                )
-                urls = screenshot_urls_from_html(page_entry.value, device)
-                warnings.append(
-                    "screenshots sourced from the public App Store page "
-                    "(lookup API returned none)"
-                )
-            except (AppStoreMCPError, PageParseError) as exc:
-                raise AppStoreMCPError(
-                    f"No {device} screenshots available for app {ref.app_id} "
-                    f"in storefront '{resolved_country}' (page fallback "
-                    f"failed: {exc})."
-                ) from exc
-        if not urls:
-            raise AppStoreMCPError(
-                f"App {ref.app_id} has no {device} screenshots in storefront "
-                f"'{resolved_country}'. Try device='ipad' or another country."
-            )
-
-        urls = urls[:limit]
-        await progress.set_total(len(urls))
-
-        async def fetch_image(url: str) -> tuple[bytes, str]:
-            response = await http.get(url, follow_redirects=True)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            fmt = "png" if "png" in content_type or url.endswith(".png") else "jpeg"
-            # Downloads run concurrently (asyncio.gather below); increments
-            # are only reported through the Progress dependency here, since
-            # this tool takes no ctx/progressToken - it only matters once a
-            # task-aware client polls a background-executed call.
-            await progress.increment()
-            return response.content, fmt
-
-        downloads = await asyncio.gather(
-            *(fetch_image(url) for url in urls), return_exceptions=True
+        reporter = DualChannelProgressReporter(ctx, progress)
+        result = await _get_app_store_screenshots(
+            itunes,
+            app_page,
+            http,
+            app_id_or_url,
+            country=country,
+            device=device,
+            limit=limit,
+            progress=reporter,
         )
-        images = []
-        fetched_urls = []
-        for url, result in zip(urls, downloads, strict=False):
-            if isinstance(result, BaseException):
-                warnings.append(f"failed to fetch {url}: {result}")
-                continue
-            data, fmt = result
-            images.append(Image(data=data, format=fmt))
-            fetched_urls.append(url)
-        if not images:
-            raise AppStoreMCPError(
-                f"All {len(urls)} screenshot downloads failed for app "
-                f"{ref.app_id}: {'; '.join(warnings)}"
-            )
-
+        images = [Image(data=img.data, format=img.format) for img in result.images]
         header = (
-            f"{len(images)} {device} screenshot(s) for app {ref.app_id} "
-            f"(storefront '{resolved_country}'), in store order:"
+            f"{len(images)} {result.device} screenshot(s) for app "
+            f"{result.app_id} (storefront '{result.country}'), in store order:"
         )
         return ToolResult(
             content=[TextContent(type="text", text=header)]
             + [image.to_image_content() for image in images],
             structured_content={
-                "app_id": ref.app_id,
-                "country": resolved_country,
-                "device": device,
+                "app_id": result.app_id,
+                "country": result.country,
+                "device": result.device,
                 "count": len(images),
-                "urls": fetched_urls,
-                "warnings": warnings,
+                "urls": result.urls,
+                "warnings": result.warnings,
             },
         )
 
@@ -1072,8 +550,8 @@ def main() -> None:
     # Stdio transport: stdout carries JSON-RPC only; never print to stdout here
     # (fastmcp's own banner and logging go to stderr).
     #
-    # ctx.warning(...) calls (see get_app_store_app, _collect_reviews) are
-    # only mirrored to the server's own log at DEBUG if this logger is raised
+    # ctx.warning(...) calls (see tools/app.py, tools/reviews.py) are only
+    # mirrored to the server's own log at DEBUG if this logger is raised
     # explicitly - otherwise they're only visible to a client that's
     # listening for them. This just raises a stdlib logging.Logger's level;
     # it never touches sys.stdout, so it can't violate the constraint above.

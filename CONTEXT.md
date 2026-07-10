@@ -10,9 +10,21 @@ issues, and tests; don't drift to synonyms.
 - **Profile** — the normalized public record of one app (`AppProfile`): the
   compact default representation, as opposed to Apple's *raw* payload.
 
+- **Chart** — a ranked list of apps for a storefront (optionally scoped to
+  one category): top-free, top-paid, or top-grossing. Each entry is a rank
+  plus a slim app identity, not a full Profile. A Chart is best-effort, like
+  Enrichment.
+
 - **Enrichment** — best-effort fields merged into a Profile from the public
   App Store web page (subtitle, has_iap, privacy). Always fail-soft: absence
   degrades to nulls plus a warning, never an error.
+
+- **Best-effort (source)** — a data source whose failure never fails the
+  tool call: absence degrades to null fields (or an empty list) plus a
+  warning, never an exception. Enrichment, Chart, and Review data are all
+  best-effort, sourced from the public web page or undocumented feeds —
+  unlike the iTunes Search/Lookup API, the one reliable source, whose
+  failure is a tool error, not a warning.
 
 - **Digest** — an LLM-compressed representation of a review set (themes,
   complaints, praise, sentiment), produced via MCP sampling. A digest is
