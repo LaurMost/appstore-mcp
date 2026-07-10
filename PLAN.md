@@ -155,11 +155,21 @@ Two schemas:
 
 ### FastMCP `Context` usage (reviewed 2026-07-10 against FastMCP docs)
 - **Adopted**: `ctx: Context = CurrentContext()` (v2.14+ preferred injection
-  style) on `get_app_store_app` and `get_app_store_reviews` only, for two
-  narrow uses:
-  - `ctx.report_progress` per page in `get_app_store_reviews`'s up-to-10-page
-    sequential feed loop — the one real long-running, multi-step operation in
-    the server, run under a 30s tool timeout.
+  style) on `get_app_store_app`, `get_app_store_reviews`, and
+  `digest_app_store_reviews` only, for two narrow uses:
+  - `ctx.report_progress` inside the shared `_collect_reviews` helper's
+    up-to-10-page sequential feed loop — the one real long-running,
+    multi-step operation in the server. Progress is reported as a
+    `progress_start`/`progress_end`-scaled percentage of `total=100` (not raw
+    page counts), with a terminal tick at `progress_end` guaranteed on every
+    exit path (full pages, early break once `limit` is satisfied, or the
+    page-fallback succeeding/failing) so a client's progress indicator never
+    stalls below 100% with no "done" signal. `get_app_store_reviews` uses the
+    full 0-100 range; `digest_app_store_reviews` reserves 0-50 for review
+    harvesting and 50-100 for its LLM sampling stage (with a 75% tick before
+    the one-shot invalid-output retry) — this keeps progress moving
+    continuously across both stages instead of going silent during the
+    often-slower sampling call, under its 120s tool timeout.
   - `ctx.warning` alongside (not instead of) the existing `meta.warnings`
     string at the two deepest fallback points (page-enrichment failure in
     `get_app_store_app`; page-fallback-also-failed in `get_app_store_reviews`)

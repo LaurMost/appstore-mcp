@@ -92,3 +92,42 @@ async def test_digest_without_sampling_support_gives_guidance() -> None:
             await client.call_tool(
                 "digest_app_store_reviews", {"app_id_or_url": "570060128"}
             )
+
+
+async def test_digest_reports_progress_across_fetch_and_sampling_stages() -> None:
+    client, _ = make_client([VALID_DIGEST])
+    calls: list[tuple[float, float | None, str | None]] = []
+
+    async def progress_handler(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+        calls.append((progress, total, message))
+
+    async with client:
+        await client.call_tool(
+            "digest_app_store_reviews",
+            {"app_id_or_url": "570060128", "limit": 50},
+            progress_handler=progress_handler,
+        )
+    # Review harvesting reports within [0, 50]; digestion finishes at 100 -
+    # movement is continuous across both stages, never silent for the
+    # (often slower) sampling call.
+    assert calls == [(5.0, 100, None), (50.0, 100, None), (100.0, 100, None)]
+
+
+async def test_digest_reports_progress_through_retry() -> None:
+    client, _ = make_client(["I cannot produce JSON, sorry.", VALID_DIGEST])
+    calls: list[tuple[float, float | None, str | None]] = []
+
+    async def progress_handler(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+        calls.append((progress, total, message))
+
+    async with client:
+        await client.call_tool(
+            "digest_app_store_reviews",
+            {"app_id_or_url": "570060128", "limit": 20},
+            progress_handler=progress_handler,
+        )
+    assert calls == [(5.0, 100, None), (50.0, 100, None), (75, 100, None), (100, 100, None)]

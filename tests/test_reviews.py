@@ -84,3 +84,40 @@ async def test_reviews_tool_falls_back_to_page_reviews_when_feed_empty() -> None
     assert any("fallback" in w or "feed" in w for w in data["meta"]["warnings"])
     assert any(p for p in paths if "570060128" in p and "customerreviews" not in p)
     assert data["sources"][-1]["name"] == "apple_app_store_page"
+
+
+def _progress_handler() -> tuple[Any, list[tuple[float, float | None, str | None]]]:
+    calls: list[tuple[float, float | None, str | None]] = []
+
+    async def handler(progress: float, total: float | None, message: str | None) -> None:
+        calls.append((progress, total, message))
+
+    return handler, calls
+
+
+async def test_reviews_tool_reports_progress_per_page_and_terminates_at_total() -> None:
+    transport, _ = reviews_transport()
+    handler, calls = _progress_handler()
+    async with Client(
+        create_server(http=httpx.AsyncClient(transport=transport)),
+        progress_handler=handler,
+    ) as client:
+        await client.call_tool(
+            "get_app_store_reviews", {"app_id_or_url": "570060128", "limit": 60}
+        )
+    # Two feed pages (10, 20 of a 0-100 scale), then a terminal tick at 100
+    # regardless of the loop having broken early once `limit` was satisfied.
+    assert calls == [(10.0, 100, None), (20.0, 100, None), (100.0, 100, None)]
+
+
+async def test_reviews_tool_reports_progress_through_page_fallback() -> None:
+    transport, _ = reviews_transport(empty_feed=True)
+    handler, calls = _progress_handler()
+    async with Client(
+        create_server(http=httpx.AsyncClient(transport=transport)),
+        progress_handler=handler,
+    ) as client:
+        await client.call_tool("get_app_store_reviews", {"app_id_or_url": "570060128"})
+    # One empty feed page, then a terminal tick at 100 once the page
+    # fallback completes - never left stuck below 100.
+    assert calls == [(10.0, 100, None), (100.0, 100, None)]

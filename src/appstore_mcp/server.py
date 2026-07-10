@@ -520,9 +520,34 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         )
 
     async def _collect_reviews(
-        app_id: str, *, country: str, sort: ReviewSort, limit: int, ctx: Context
+        app_id: str,
+        *,
+        country: str,
+        sort: ReviewSort,
+        limit: int,
+        ctx: Context,
+        progress_start: float = 0,
+        progress_end: float = 100,
     ) -> _ReviewCollection:
-        """Shared review harvesting: paginated feed, page fallback on empty."""
+        """Shared review harvesting: paginated feed, page fallback on empty.
+
+        Progress is reported as a percentage of `total=100`, scaled into
+        [progress_start, progress_end] so a caller doing further work
+        afterwards (digest_app_store_reviews's LLM sampling stage) can
+        reserve the remainder of the 0-100 range for its own progress. A
+        terminal tick at progress_end is always emitted before returning,
+        regardless of which exit path below is taken (full MAX_FEED_PAGES
+        pages, an early break once `limit` is satisfied, or the page
+        fallback succeeding/failing) - otherwise a client's progress
+        indicator can stall below 100% with no "done" signal for this stage.
+        """
+        span = progress_end - progress_start
+
+        async def _tick(fraction: float) -> None:
+            await ctx.report_progress(
+                progress=progress_start + span * fraction, total=100
+            )
+
         collected: list[Review] = []
         warnings: list[str] = []
         sources: list[Source] = []
@@ -533,7 +558,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             )
             # Best-effort estimate: the loop below may break early once `limit`
             # is satisfied, so `MAX_FEED_PAGES` is an upper bound, not a promise.
-            await ctx.report_progress(progress=page_number, total=MAX_FEED_PAGES)
+            await _tick(page_number / MAX_FEED_PAGES)
             if first_entry is None:
                 first_entry = entry
             page_entries = entries_from_feed(entry.value)
@@ -581,6 +606,8 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                     f"review page fallback also failed for app {app_id}: {exc}"
                 )
 
+        await _tick(1.0)  # stage done regardless of which exit path was taken
+
         return _ReviewCollection(
             reviews=collected,
             sources=sources,
@@ -624,8 +651,17 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         """
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        # Review harvesting gets the first half of the progress range; LLM
+        # digestion (below) gets the second half, so a client watching
+        # progress sees continuous movement across both stages instead of
+        # silence during the (often slower) sampling call.
         collection = await _collect_reviews(
-            ref.app_id, country=resolved_country, sort=sort, limit=limit, ctx=ctx
+            ref.app_id,
+            country=resolved_country,
+            sort=sort,
+            limit=limit,
+            ctx=ctx,
+            progress_end=50,
         )
         if not collection.reviews:
             raise AppStoreMCPError(
@@ -659,6 +695,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         try:
             digest = parse_digest(text)
         except (ValueError, ValidationError) as first_error:
+            await ctx.report_progress(progress=75, total=100)
             retry = await ctx.sample(
                 messages=[
                     SamplingMessage(
@@ -685,6 +722,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             )
             digest = parse_digest(retry.text or "")
             warnings.append("digest required a retry after invalid LLM output")
+        await ctx.report_progress(progress=100, total=100)
         warnings.append(
             "digest is LLM-generated from the reviews below; quotes may be "
             "translated or paraphrased"
