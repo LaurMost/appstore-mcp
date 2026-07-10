@@ -2,11 +2,11 @@
 
 import asyncio
 import re
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 from fastmcp import FastMCP
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from appstore_mcp.apple import charts as charts_mod
 from appstore_mcp.apple import itunes as itunes_mod
@@ -110,19 +110,26 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         annotations={
             "title": "Search the Apple App Store",
             "readOnlyHint": True,
+            "idempotentHint": True,
             "openWorldHint": True,
-        }
+        },
+        timeout=25.0,
     )
     async def search_app_store(
         query: str,
         country: str = DEFAULT_COUNTRY,
-        limit: int = 10,
+        limit: Annotated[int, Field(ge=1, le=50)] = 10,
     ) -> SearchAppsResult:
         """Search Apple App Store apps by keyword. Returns slim results
         (id, name, developer, rating, price) - use get_app_store_app for the
-        full profile of a specific app."""
+        full profile of a specific app.
+
+        Args:
+            query: Keyword(s) to search for, e.g. 'language learning'.
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+            limit: Max results to return (1-50).
+        """
         country = _validate_country(country)
-        limit = max(1, min(limit, 50))
         entry = await itunes.search(query, country=country, limit=limit)
         results = [
             search_result_from_lookup(item)
@@ -145,8 +152,10 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         annotations={
             "title": "Get App Store app profile",
             "readOnlyHint": True,
+            "idempotentHint": True,
             "openWorldHint": True,
-        }
+        },
+        timeout=25.0,
     )
     async def get_app_store_app(
         app_id_or_url: str,
@@ -158,7 +167,18 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         apps.apple.com URL. Page-sourced fields (subtitle, has_iap, privacy) are
         best-effort; set include_page_data=false to skip that second request.
         Set include_raw=true to also get Apple's unmodified lookup payload
-        (large - only when normalized fields are not enough)."""
+        (large - only when normalized fields are not enough).
+
+        Args:
+            app_id_or_url: Numeric App Store app ID (e.g. '570060128') or a
+                full apps.apple.com URL.
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+                Defaults to the country in the URL if one was passed, else 'us'.
+            include_page_data: Also fetch subtitle, has_iap, and privacy labels
+                from the public App Store page (best-effort, one extra request).
+            include_raw: Also return Apple's unmodified lookup payload under
+                `raw` (large - only when normalized fields are not enough).
+        """
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
 
@@ -229,8 +249,10 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         annotations={
             "title": "Compare App Store apps",
             "readOnlyHint": True,
+            "idempotentHint": True,
             "openWorldHint": True,
-        }
+        },
+        timeout=25.0,
     )
     async def compare_app_store_apps(
         apps: list[str],
@@ -238,7 +260,14 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     ) -> CompareAppsResult:
         """Fetch full profiles for multiple apps (IDs or apps.apple.com URLs) in
         one batch for side-by-side competitor comparison. Returns the profiles
-        plus per-app errors; apps that fail do not fail the whole call."""
+        plus per-app errors; apps that fail do not fail the whole call.
+
+        Args:
+            apps: App IDs or apps.apple.com URLs to compare, e.g.
+                ['570060128', 'https://apps.apple.com/us/app/babbel/id829587759'].
+            country: ISO 3166-1 alpha-2 storefront all apps are compared on,
+                e.g. 'us', 'de', 'jp'. One call always uses a single storefront.
+        """
         country = _validate_country(country)
         if not apps:
             raise InvalidInputError("Pass at least one app ID or App Store URL in `apps`.")
@@ -315,21 +344,34 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         annotations={
             "title": "Get App Store charts",
             "readOnlyHint": True,
+            "idempotentHint": True,
             "openWorldHint": True,
-        }
+        },
+        timeout=25.0,
     )
     async def get_app_store_charts(
         country: str = DEFAULT_COUNTRY,
         chart: ChartName = "top-free",
         category: str | None = None,
-        limit: int = 50,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> ChartsResult:
-        """Fetch ranked top-chart apps for a storefront: top-free, top-paid, or
-        top-grossing, optionally filtered to a category (name like 'finance' or
-        numeric App Store genre ID). Best-effort: sourced from an undocumented
-        Apple RSS feed."""
+        """Fetch ranked top-chart apps for a storefront. Best-effort: sourced
+        from an undocumented Apple RSS feed.
+
+        Args:
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+            chart: Which chart to fetch: 'top-free', 'top-paid', or
+                'top-grossing'.
+            category: Optional filter - a numeric App Store genre ID, or one
+                of: books, business, developer-tools, education,
+                entertainment, finance, food-drink, games, graphics-design,
+                health-fitness, lifestyle, magazines-newspapers, medical,
+                music, navigation, news, photo-video, productivity,
+                reference, shopping, social-networking, sports, stickers,
+                travel, utilities, weather. Omit for the overall chart.
+            limit: Max entries to return (1-100).
+        """
         country = _validate_country(country)
-        limit = max(1, min(limit, 100))
         genre_id = resolve_genre_id(category) if category else None
         entry = await charts.fetch(
             country=country, chart=chart, limit=limit, genre_id=genre_id
@@ -367,22 +409,34 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         annotations={
             "title": "Get App Store reviews",
             "readOnlyHint": True,
+            "idempotentHint": True,
             "openWorldHint": True,
-        }
+        },
+        timeout=30.0,
     )
     async def get_app_store_reviews(
         app_id_or_url: str,
         country: str | None = None,
-        limit: int = 50,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
         sort: ReviewSort = "most_recent",
     ) -> ReviewsResult:
-        """Fetch recent public customer reviews for an app (numeric ID or
-        apps.apple.com URL). Best-effort: sourced from an undocumented Apple
-        feed capped at ~500 reviews per storefront, with a small page-sourced
-        fallback when the feed is empty. Reviews are per-country."""
+        """Fetch recent public customer reviews for an app. Best-effort:
+        sourced from an undocumented Apple feed capped at ~500 reviews per
+        storefront, with a small page-sourced fallback when the feed is
+        empty. Reviews are per-country.
+
+        Args:
+            app_id_or_url: Numeric App Store app ID or a full apps.apple.com
+                URL.
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+                Defaults to the country in the URL if one was passed, else
+                'us'.
+            limit: Max reviews to return (1-500; Apple caps the underlying
+                feed at ~500 per storefront regardless of this value).
+            sort: 'most_recent' or 'most_helpful'.
+        """
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
-        limit = max(1, min(limit, 500))
 
         collected: list[Review] = []
         warnings: list[str] = []

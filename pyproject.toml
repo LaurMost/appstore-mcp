@@ -18,6 +18,10 @@ dependencies = [
     "httpx>=0.28.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/LaurMost/appstore-mcp"
+Issues = "https://github.com/LaurMost/appstore-mcp/issues"
+
 [project.scripts]
 appstore-mcp = "appstore_mcp.server:main"
 

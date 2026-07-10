@@ -44,8 +44,19 @@ Design rules:
 - Reviews are a **separate tool**, not a flag on `get_app_store_app` — different
   (unofficial) source, different failure modes, heavy token cost.
 - Every tool carries annotations: `title`, `readOnlyHint: true`,
+  `idempotentHint: true` (no side effects, repeated calls are safe),
   `openWorldHint: true` (required by Anthropic review criteria; read-only lets
   Claude auto-run without per-call confirmation).
+- Every tool has an explicit `timeout` (25-30s) so a slow/hanging upstream
+  fails with a clean MCP error instead of an unbounded wait — matters most for
+  `get_app_store_reviews`, which can chain up to 10 sequential feed requests.
+- Numeric `limit` params are `Annotated[int, Field(ge=1, le=N)]`, not manual
+  clamping — out-of-range values are rejected with a clear validation error
+  and the real bound is visible in the tool's JSON schema, instead of being
+  silently truncated with no feedback.
+- Every tool docstring has a Google-style `Args:` section so FastMCP (3.2.4+)
+  generates a per-parameter description in the schema, not just a single
+  whole-function description.
 - Server-level `instructions`: public-data-only scope, no downloads/revenue,
   **apps are per-storefront — pass `country`**.
 
