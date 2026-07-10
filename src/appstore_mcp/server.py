@@ -153,14 +153,19 @@ _BACKGROUND_TASK = TaskConfig(mode="optional", poll_interval=timedelta(seconds=5
 
 
 def _load_icon() -> Icon:
-    """Embed the packaged SVG icon as a data URI.
+    """Embed the packaged PNG icon as a data URI.
 
     A data URI (rather than a hosted URL) matches how this project ships:
     stdio-only via `uvx`, with no domain of its own to host a static asset on.
+
+    PNG, not the SVG it is rendered from (assets/icon.svg): the MCP spec only
+    obligates clients to render PNG/JPEG icons, and Claude Desktop drops
+    image/svg+xml data URIs on the floor. Regenerate after editing the SVG:
+    mcpb/build.sh step 3 has the headless-Chrome recipe (128px here).
     """
-    svg_bytes = resources.files("appstore_mcp").joinpath("assets/icon.svg").read_bytes()
-    data_uri = Image(data=svg_bytes, format="svg+xml").to_data_uri()
-    return Icon(src=data_uri, mimeType="image/svg+xml", sizes=["any"])
+    png_bytes = resources.files("appstore_mcp").joinpath("assets/icon.png").read_bytes()
+    data_uri = Image(data=png_bytes, format="png").to_data_uri()
+    return Icon(src=data_uri, mimeType="image/png", sizes=["128x128"])
 
 
 async def _reap(task: "asyncio.Task[Any]") -> None:
