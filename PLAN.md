@@ -153,6 +153,41 @@ Two schemas:
 - **One MCP prompt**: `compare_competitors(apps, country)` — expands to the
   headline demo instruction. No other prompts, no resources.
 
+### FastMCP `Context` usage (reviewed 2026-07-10 against FastMCP docs)
+- **Adopted**: `ctx: Context = CurrentContext()` (v2.14+ preferred injection
+  style) on `get_app_store_app` and `get_app_store_reviews` only, for two
+  narrow uses:
+  - `ctx.report_progress` per page in `get_app_store_reviews`'s up-to-10-page
+    sequential feed loop — the one real long-running, multi-step operation in
+    the server, run under a 30s tool timeout.
+  - `ctx.warning` alongside (not instead of) the existing `meta.warnings`
+    string at the two deepest fallback points (page-enrichment failure in
+    `get_app_store_app`; page-fallback-also-failed in `get_app_store_reviews`)
+    — cheap extra observability for anyone tailing client-side logs, on top
+    of the structured warning the response already carries.
+- **Deliberately not adopted** (each has a real conflict or no motivating
+  case here, not just unused-by-omission):
+  - *Session state* (`ctx.get_state`/`set_state`) — would conflict with the
+    shared, cross-session `TTLCache` (see Caching & politeness above), which
+    exists specifically to reduce load on Apple's endpoints *across* all
+    callers. Per-session isolation would defeat that.
+  - *Resources* (`ctx.list_resources`/`read_resource`) — no `@mcp.resource`
+    exists; nothing to enumerate.
+  - *Prompt access* (`ctx.list_prompts`/`get_prompt`) — only one prompt
+    exists and no tool needs to look it up programmatically.
+  - *LLM sampling* (`ctx.sample`) — would reintroduce the pre-baked
+    "analysis" `compare_app_store_apps` explicitly avoids (see Tool surface
+    above: "Analysis is the LLM's job").
+  - *Elicitation* (`ctx.elicit`) — every tool takes explicit typed params;
+    disambiguation (e.g. app name → ID) is left to the calling agent via
+    `search_app_store`, not an interactive mid-call prompt.
+  - *Session visibility / change notifications* — the tool/prompt set is
+    fixed at startup with no auth/tiering concept and nothing toggled at
+    runtime.
+  - *`ctx.transport`* — `main()` hard-codes `stdio`; there's no shipped code
+    path where it would ever read anything else. Revisit only if a tested
+    HTTP self-host mode ships.
+
 ### Testing
 1. **Fixture-based unit tests** (bulk): real recorded responses in
    `tests/fixtures/` (lookup JSON, search JSON, saved App Store HTML, charts page,

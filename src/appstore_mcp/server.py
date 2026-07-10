@@ -6,6 +6,8 @@ from typing import Annotated, Any
 
 import httpx
 from fastmcp import FastMCP
+from fastmcp.dependencies import CurrentContext
+from fastmcp.server.context import Context
 from pydantic import Field, ValidationError
 
 from appstore_mcp.apple import charts as charts_mod
@@ -162,6 +164,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         country: str | None = None,
         include_page_data: bool = True,
         include_raw: bool = False,
+        ctx: Context = CurrentContext(),
     ) -> GetAppResult:
         """Fetch the full public App Store profile for one app by numeric ID or
         apps.apple.com URL. Page-sourced fields (subtitle, has_iap, privacy) are
@@ -221,6 +224,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 warnings.append(
                     f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
                 )
+                await ctx.warning(f"page enrichment failed for app {ref.app_id}: {exc}")
             else:
                 profile.subtitle = enrichment.subtitle
                 profile.has_iap = enrichment.has_iap
@@ -419,6 +423,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         country: str | None = None,
         limit: Annotated[int, Field(ge=1, le=500)] = 50,
         sort: ReviewSort = "most_recent",
+        ctx: Context = CurrentContext(),
     ) -> ReviewsResult:
         """Fetch recent public customer reviews for an app. Best-effort:
         sourced from an undocumented Apple feed capped at ~500 reviews per
@@ -446,6 +451,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             entry = await reviews_client.fetch_page(
                 ref.app_id, country=resolved_country, sort=sort, page=page_number
             )
+            # Best-effort estimate: the loop below may break early once `limit`
+            # is satisfied, so `MAX_FEED_PAGES` is an upper bound, not a promise.
+            await ctx.report_progress(progress=page_number, total=MAX_FEED_PAGES)
             if first_entry is None:
                 first_entry = entry
             page_entries = entries_from_feed(entry.value)
@@ -491,6 +499,9 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 fresh = page_entry.fresh
             except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(f"page fallback also failed ({exc})")
+                await ctx.warning(
+                    f"review page fallback also failed for app {ref.app_id}: {exc}"
+                )
 
         return ReviewsResult(
             meta=Meta(
