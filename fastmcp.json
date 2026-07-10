@@ -1,0 +1,20 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "src/appstore_mcp/server.py",
+    "entrypoint": "create_server"
+  },
+  "environment": {
+    "python": ">=3.12",
+    "editable": ["."]
+  },
+  "deployment": {
+    "transport": "stdio",
+    "log_level": "INFO",
+    "env": {
+      "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+      "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+      "APPSTORE_MCP_SAMPLING_MODEL": "${APPSTORE_MCP_SAMPLING_MODEL}"
+    }
+  }
+}

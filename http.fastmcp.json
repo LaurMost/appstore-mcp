@@ -1,0 +1,18 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "src/appstore_mcp/server.py",
+    "entrypoint": "create_server"
+  },
+  "environment": {
+    "python": ">=3.12",
+    "editable": ["."]
+  },
+  "deployment": {
+    "transport": "http",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "path": "/mcp/",
+    "log_level": "DEBUG"
+  }
+}

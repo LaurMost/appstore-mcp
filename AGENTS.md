@@ -3,6 +3,9 @@
 Open-source MCP server for live Apple App Store competitor research.
 Python 3.12, uv, fastmcp. Design spec of record: `PLAN.md`.
 
+Local dev server: `fastmcp dev` (Inspector UI, stdio) or `fastmcp run`
+(standalone), driven by `fastmcp.json` — see README's Development section.
+
 ## Agent skills
 
 ### Issue tracker

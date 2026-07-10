@@ -96,6 +96,20 @@ uv run ruff check .    # lint
 uv run ruff format .   # format (Black-compatible style)
 ```
 
+`fastmcp.json` declares how to run the server from source (see
+[Project Configuration](https://gofastmcp.com/deployment/server-configuration)).
+Use it to poke at the server directly, without a full MCP client:
+
+```sh
+fastmcp dev             # launch the MCP Inspector against local source (stdio)
+fastmcp run             # run the server standalone (stdio)
+fastmcp dev http.fastmcp.json  # same, but over HTTP on localhost:8000
+```
+
+This is a local-iteration convenience only — the published package (`uvx
+appstore-mcp`) always runs over stdio via its own `main()` entrypoint,
+regardless of what's declared here.
+
 Some tests assert full response shapes via [inline-snapshot](https://github.com/15r10nk/inline-snapshot).
 After an intentional change to a tool's output shape, regenerate them:
 
