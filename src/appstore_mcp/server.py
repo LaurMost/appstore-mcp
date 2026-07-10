@@ -429,6 +429,23 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             sources=sources,
         )
 
+    @mcp.prompt
+    def compare_competitors(apps: str, country: str = DEFAULT_COUNTRY) -> str:
+        """Run a competitor comparison for the given apps (names, IDs, or
+        App Store URLs, comma-separated) on one storefront."""
+        return (
+            f"Compare these apps on the '{country}' Apple App Store storefront: "
+            f"{apps}.\n\n"
+            "If any of them are names rather than IDs/URLs, resolve them with "
+            "search_app_store first. Then fetch them side by side with "
+            "compare_app_store_apps and analyze: positioning (name, subtitle, "
+            "description angle), pricing model, rating level vs. volume, update "
+            "cadence (last_updated), category overlap, and localization reach "
+            "(languages). Note any limitations reported in meta.warnings, and "
+            "remember download counts and revenue are not available from public "
+            "App Store data."
+        )
+
     return mcp
 
 

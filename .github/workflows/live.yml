@@ -1,0 +1,17 @@
+name: Live smoke tests
+
+# Weekly run against real Apple endpoints to catch format drift in the
+# undocumented feeds and the page parser before users hit it.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --dev
+      - run: uv run pytest -m live -q
