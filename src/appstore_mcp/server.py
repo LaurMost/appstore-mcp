@@ -7,15 +7,22 @@ from typing import Any
 import httpx
 from fastmcp import FastMCP
 
+from appstore_mcp.apple import charts as charts_mod
 from appstore_mcp.apple import page as page_mod
+from appstore_mcp.apple.charts import ChartName, ChartsClient, chart_url, resolve_genre_id
 from appstore_mcp.apple.fetch import USER_AGENT
 from appstore_mcp.apple.ids import parse_app_ref
 from appstore_mcp.apple.itunes import LOOKUP_URL, SEARCH_URL, SOURCE_NAME, ITunesClient
 from appstore_mcp.apple.page import AppPageClient, PageParseError, enrichment_from_html
-from appstore_mcp.apple.normalize import profile_from_lookup, search_result_from_lookup
+from appstore_mcp.apple.normalize import (
+    chart_entry_from_feed,
+    profile_from_lookup,
+    search_result_from_lookup,
+)
 from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
 from appstore_mcp.models import (
     AppError,
+    ChartsResult,
     CompareAppsResult,
     GetAppResult,
     Meta,
@@ -58,6 +65,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         )
     itunes = ITunesClient(http)
     app_page = AppPageClient(http)
+    charts = ChartsClient(http)
 
     mcp: FastMCP = FastMCP(name="appstore-mcp", instructions=INSTRUCTIONS)
 
@@ -268,6 +276,62 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             apps=profiles,
             errors=errors,
             sources=[Source(name=SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)],
+        )
+
+    @mcp.tool(
+        annotations={
+            "title": "Get App Store charts",
+            "readOnlyHint": True,
+            "openWorldHint": True,
+        }
+    )
+    async def get_app_store_charts(
+        country: str = DEFAULT_COUNTRY,
+        chart: ChartName = "top-free",
+        category: str | None = None,
+        limit: int = 50,
+    ) -> ChartsResult:
+        """Fetch ranked top-chart apps for a storefront: top-free, top-paid, or
+        top-grossing, optionally filtered to a category (name like 'finance' or
+        numeric App Store genre ID). Best-effort: sourced from an undocumented
+        Apple RSS feed."""
+        country = _validate_country(country)
+        limit = max(1, min(limit, 100))
+        genre_id = resolve_genre_id(category) if category else None
+        entry = await charts.fetch(
+            country=country, chart=chart, limit=limit, genre_id=genre_id
+        )
+        feed = entry.value.get("feed") or {}
+        raw_entries = feed.get("entry") or []
+        if isinstance(raw_entries, dict):  # Apple returns a bare object for limit=1
+            raw_entries = [raw_entries]
+        entries = [
+            chart_entry_from_feed(item, rank=index)
+            for index, item in enumerate(raw_entries, start=1)
+        ]
+        url = chart_url(country, chart, limit=limit, genre_id=genre_id)
+        warnings = [
+            "chart data comes from an undocumented Apple RSS feed and may "
+            "change or break without notice"
+        ]
+        if not entries:
+            warnings.append(
+                f"the feed returned no entries for chart='{chart}' "
+                f"category={category!r} in storefront '{country}'"
+            )
+        return ChartsResult(
+            meta=Meta(
+                country=country,
+                retrieved_at=entry.retrieved_at,
+                fresh=entry.fresh,
+                warnings=warnings,
+            ),
+            chart=chart,
+            category=category,
+            entries=entries,
+            sources=[
+                Source(name=charts_mod.SOURCE_NAME, url=url, retrieved_at=entry.retrieved_at)
+            ],
         )
 
     return mcp
