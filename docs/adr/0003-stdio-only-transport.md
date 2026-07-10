@@ -1,5 +1,11 @@
 # Ship stdio-only transport in v1, no hosted mode
 
+> Partially superseded by
+> [ADR-0012](0012-additive-hosted-http-mode.md): an additive, API-key-gated
+> hosted HTTP mode was added. The rate-limit-concentration and no-auth
+> reasoning below still explains why that hosted mode isn't the
+> primary/default path — stdio/`uvx` remains it.
+
 appstore-mcp runs exclusively over stdio, published to PyPI and launched via
 `uvx appstore-mcp`. Apple's iTunes Search/Lookup API is undocumented but has
 real-world headroom well above its documented "~20 req/min" (reports of

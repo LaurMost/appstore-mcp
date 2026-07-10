@@ -4,9 +4,10 @@ import httpx
 import pytest
 from dirty_equals import IsDatetime
 from fastmcp import Client
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from inline_snapshot import snapshot
 
-from appstore_mcp.server import create_server
+from appstore_mcp.server import _auth_provider, create_server
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -336,6 +337,20 @@ async def test_get_app_not_found_is_agent_recoverable_error(
             await client.call_tool(
                 "get_app_store_app", {"app_id_or_url": "999999999999"}
             )
+
+
+def test_auth_provider_unset_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APPSTORE_MCP_API_KEY", raising=False)
+    assert _auth_provider() is None
+
+
+def test_auth_provider_configures_static_token_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APPSTORE_MCP_API_KEY", "secret-key")
+    verifier = _auth_provider()
+    assert isinstance(verifier, StaticTokenVerifier)
+    assert verifier.tokens == {"secret-key": {"client_id": "hosted"}}
 
 
 async def test_tools_carry_required_annotations(server_client: Client) -> None:

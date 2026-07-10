@@ -19,6 +19,7 @@ from typing import Annotated, Any, Literal
 import httpx
 from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentContext, Progress
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.context import Context
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
@@ -93,6 +94,22 @@ def _sampling_fallback_handler() -> Any | None:
         except ImportError:
             return None
     return None
+
+
+def _auth_provider() -> StaticTokenVerifier | None:
+    """Optional bearer-token gate for the hosted HTTP deployment.
+
+    Unset by default, so `uvx appstore-mcp` (stdio) behavior is unchanged -
+    stdio has no network listener for a token to gate in the first place.
+    APPSTORE_MCP_API_KEY only ever gets set in the hosted (FastMCP Cloud)
+    deployment's environment variables, to control who can drive traffic
+    through that instance's shared IP - see
+    docs/adr/0012-additive-hosted-http-mode.md.
+    """
+    api_key = os.environ.get("APPSTORE_MCP_API_KEY")
+    if not api_key:
+        return None
+    return StaticTokenVerifier(tokens={api_key: {"client_id": "hosted"}})
 
 
 INSTRUCTIONS = """\
@@ -202,6 +219,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     reviews_client = ReviewsClient(http, cache)
 
     sampling_handler = _sampling_fallback_handler()
+    auth = _auth_provider()
     icon = _load_icon()
     mcp: FastMCP = FastMCP(
         name="appstore-mcp",
@@ -210,6 +228,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         icons=[icon],
         sampling_handler=sampling_handler,
         sampling_handler_behavior="fallback",
+        auth=auth,
         lifespan=_close_owned_http,
     )
 

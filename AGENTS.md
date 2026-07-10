@@ -42,11 +42,13 @@ Conventions for any new tool:
 ## Out of scope
 
 Google Play, download/revenue estimates, App Store Connect data, historical
-tracking, paid data providers, browser automation, a hosted/HTTP mode, a
-dashboard, a database. This project stays public-Apple-data-only and
-stdio-only (`docs/adr/0003-stdio-only-transport.md`); don't pick up a
-feature request from this list without first revisiting the scope decision
-explicitly.
+tracking, paid data providers, browser automation, a dashboard, a database.
+This project stays public-Apple-data-only; don't pick up a feature request
+from this list without first revisiting the scope decision explicitly.
+stdio/`uvx` remains the primary, default, unauthenticated path
+(`docs/adr/0003-stdio-only-transport.md`); a separate, API-key-gated hosted
+HTTP deployment additionally exists per
+`docs/adr/0012-additive-hosted-http-mode.md`.
 
 ## Testing
 

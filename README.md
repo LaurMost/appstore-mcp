@@ -8,8 +8,10 @@ It lets AI agents search apps, fetch public App Store metadata, compare
 competitors side by side, and retrieve reviews and top charts as structured
 JSON — for market research, ASO research, and product analysis.
 
-It works with public competitor data only. No Apple developer account, no API
-keys, no database.
+It works with public competitor data only. The default, recommended `uvx`
+setup below needs no Apple developer account, no API keys, and no database
+(a separate, optional hosted alternative does require an API key — see
+[Hosted deployment](#hosted-deployment)).
 
 > Compare Duolingo, Babbel, and Busuu on the US Apple App Store.
 
@@ -35,6 +37,17 @@ Requires [uv](https://docs.astral.sh/uv/). Add to your MCP client config:
 
 If your MCP client can't find `uvx`, use the absolute path from `which uvx` as
 the `command`.
+
+## Hosted deployment
+
+The `uvx` setup above is still the primary, recommended way to use this
+server — it needs no API key. A hosted HTTP instance is also available at
+`https://appstore-mcp.fastmcp.app/mcp` for MCP clients that need a
+network-accessible endpoint instead of a local stdio process. It requires an
+API key, sent as an `Authorization: Bearer <key>` header. See
+[docs/adr/0012-additive-hosted-http-mode.md](docs/adr/0012-additive-hosted-http-mode.md)
+for why this is additive rather than a replacement, and the trade-offs
+involved.
 
 ## Tools
 
@@ -116,6 +129,12 @@ the HTTP variant first, then point it at that:
 fastmcp run http.fastmcp.json &
 fastmcp generate-cli http://localhost:8000/mcp/ cli.py
 ```
+
+The real hosted deployment
+(`https://appstore-mcp.fastmcp.app/mcp`, with an API key — see
+[Hosted deployment](#hosted-deployment)) works as a `generate-cli`/`fastmcp
+list`/`fastmcp call` target too, if you'd rather point at that than spin up
+your own local HTTP server.
 
 This is a local-iteration convenience only — the published package (`uvx
 appstore-mcp`) always runs over stdio via its own `main()` entrypoint,

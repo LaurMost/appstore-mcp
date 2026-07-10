@@ -13,6 +13,9 @@
     "host": "127.0.0.1",
     "port": 8000,
     "path": "/mcp/",
-    "log_level": "DEBUG"
+    "log_level": "DEBUG",
+    "env": {
+      "APPSTORE_MCP_API_KEY": "${APPSTORE_MCP_API_KEY}"
+    }
   }
 }
