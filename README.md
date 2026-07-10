@@ -41,6 +41,8 @@ the `command`.
 | `get_app_store_app` | Full public profile for one app: description, release notes, ratings, versions, screenshots, subtitle, in-app-purchase flag, privacy labels |
 | `compare_app_store_apps` | Batch-fetch several apps (IDs or URLs) side by side in one call |
 | `get_app_store_reviews` | Recent public customer reviews (up to ~500 per storefront) |
+| `digest_app_store_reviews` | Compress up to 500 reviews into a structured digest (themes, complaints, praise, sentiment) via MCP sampling — raw reviews never enter your context, and foreign-language storefronts are digested in English |
+| `get_app_store_screenshots` | An app's screenshots as actual images, so a multimodal model can analyze visual positioning, onboarding, and paywall design |
 | `get_app_store_charts` | Top-free / top-paid / top-grossing charts, overall or per category, per country |
 
 All tools are read-only and take a `country` storefront parameter (ISO
@@ -49,6 +51,22 @@ the headline comparison workflow.
 
 Responses are compact and normalized by default; `get_app_store_app` accepts
 `include_raw=true` when you want Apple's unmodified lookup payload.
+
+### Review digestion and MCP sampling
+
+`digest_app_store_reviews` uses [MCP sampling](https://modelcontextprotocol.io/docs/learn/client-concepts#sampling):
+the tool asks *your client's* LLM to compress the reviews, so no API key is
+needed. Not all MCP clients support sampling. If yours doesn't, either use
+`get_app_store_reviews` for raw reviews, or enable the server-side fallback:
+
+```sh
+uvx "appstore-mcp[anthropic]"   # + set ANTHROPIC_API_KEY
+uvx "appstore-mcp[openai]"      # + set OPENAI_API_KEY
+```
+
+Set `APPSTORE_MCP_SAMPLING_MODEL` to override the fallback model. The digest
+is LLM-generated data reduction, not ground truth — quotes may be translated
+or paraphrased, and responses say so in `meta.warnings`.
 
 ## Data sources and honest limitations
 

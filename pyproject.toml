@@ -18,6 +18,10 @@ dependencies = [
     "httpx>=0.28.1",
 ]
 
+[project.optional-dependencies]
+anthropic = ["fastmcp[anthropic]"]
+openai = ["fastmcp[openai]"]
+
 [project.urls]
 Homepage = "https://github.com/LaurMost/appstore-mcp"
 Issues = "https://github.com/LaurMost/appstore-mcp/issues"

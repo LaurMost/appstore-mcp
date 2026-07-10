@@ -68,6 +68,19 @@ async def test_live_charts_category(live_client: Client) -> None:
     assert len(entries) == 10, "genre feed drift: no category entries"
 
 
+async def test_live_screenshots_page_fallback(live_client: Client) -> None:
+    # Duolingo's lookup returns no screenshot URLs, so this exercises the
+    # page-template fallback end to end, pixels included.
+    result = await live_client.call_tool(
+        "get_app_store_screenshots", {"app_id_or_url": DUOLINGO, "limit": 2}
+    )
+    from mcp.types import ImageContent
+
+    images = [b for b in result.content if isinstance(b, ImageContent)]
+    assert len(images) == 2, f"screenshot drift: {result.structured_content}"
+    assert result.structured_content["count"] == 2
+
+
 async def test_live_reviews(live_client: Client) -> None:
     result = await live_client.call_tool(
         "get_app_store_reviews", {"app_id_or_url": DUOLINGO, "limit": 10}

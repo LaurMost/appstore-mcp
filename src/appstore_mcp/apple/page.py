@@ -142,6 +142,39 @@ def reviews_from_html(html: str) -> list[Review]:
     return reviews
 
 
+_MEDIA_SHELVES = {"iphone": "product_media_phone_", "ipad": "product_media_pad_"}
+
+
+def screenshot_urls_from_html(html: str, device: str, width: int = 400) -> list[str]:
+    """Render screenshot URLs from the page's media-shelf artwork templates.
+
+    The lookup API sometimes returns no screenshot URLs at all (Duolingo does
+    this); the page's `product_media_*` shelves carry `{w}x{h}{c}.{f}`
+    templates we can render at a modest width to keep image payloads small.
+    """
+    data = _server_data(html)
+    shelves = data.get("shelfMapping") or {}
+    shelf = shelves.get(_MEDIA_SHELVES.get(device, "")) or {}
+    urls: list[str] = []
+    for item in shelf.get("items") or []:
+        artwork = item.get("screenshot") if isinstance(item, dict) else None
+        if not isinstance(artwork, dict):
+            continue
+        template = artwork.get("template")
+        native_w = artwork.get("width")
+        native_h = artwork.get("height")
+        if not (isinstance(template, str) and native_w and native_h):
+            continue
+        height = round(native_h * width / native_w)
+        urls.append(
+            template.replace("{w}", str(width))
+            .replace("{h}", str(height))
+            .replace("{c}", "bb")
+            .replace("{f}", "jpg")
+        )
+    return urls
+
+
 class AppPageClient:
     def __init__(self, http: httpx.AsyncClient, cache: TTLCache[str] | None = None) -> None:
         self._http = http

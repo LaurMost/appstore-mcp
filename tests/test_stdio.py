@@ -64,6 +64,8 @@ def test_stdout_is_pure_jsonrpc_during_handshake() -> None:
             "get_app_store_app",
             "compare_app_store_apps",
             "get_app_store_reviews",
+            "digest_app_store_reviews",
+            "get_app_store_screenshots",
             "get_app_store_charts",
         }
     finally:

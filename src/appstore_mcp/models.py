@@ -100,6 +100,27 @@ class ChartEntry(BaseModel):
     icon_url: str | None = None
 
 
+class ReviewTheme(BaseModel):
+    theme: str
+    sentiment: Literal["positive", "negative", "mixed"]
+    approximate_share: str | None = None
+    example_quote: str | None = None
+
+
+class ReviewDigest(BaseModel):
+    """LLM-compressed representation of a review set (data reduction, not
+    ground truth - quotes may be translated/paraphrased)."""
+
+    overall_sentiment: Literal[
+        "very_negative", "negative", "mixed", "positive", "very_positive"
+    ]
+    summary: str
+    themes: list[ReviewTheme] = Field(default_factory=list)
+    top_complaints: list[str] = Field(default_factory=list)
+    top_praise: list[str] = Field(default_factory=list)
+    source_language_note: str | None = None
+
+
 class AppError(BaseModel):
     """Per-item failure inside an otherwise successful batch response."""
 
@@ -132,6 +153,14 @@ class ReviewsResult(BaseModel):
     meta: Meta
     app_id: str
     reviews: list[Review]
+    sources: list[Source]
+
+
+class DigestReviewsResult(BaseModel):
+    meta: Meta
+    app_id: str
+    reviews_considered: int
+    digest: ReviewDigest
     sources: list[Source]
 
 

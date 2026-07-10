@@ -1,13 +1,19 @@
 """FastMCP server: thin tools over the apple/ clients."""
 
 import asyncio
+import os
 import re
-from typing import Annotated, Any
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentContext
 from fastmcp.server.context import Context
+from fastmcp.tools import ToolResult
+from fastmcp.utilities.types import Image
+from mcp.types import SamplingMessage, TextContent
 from pydantic import Field, ValidationError
 
 from appstore_mcp.apple import charts as charts_mod
@@ -34,6 +40,7 @@ from appstore_mcp.apple.page import (
     PageParseError,
     enrichment_from_html,
     reviews_from_html,
+    screenshot_urls_from_html,
 )
 from appstore_mcp.apple.reviews import (
     MAX_FEED_PAGES,
@@ -43,12 +50,14 @@ from appstore_mcp.apple.reviews import (
     review_feed_url,
 )
 from appstore_mcp.cache import TTLCache
+from appstore_mcp.digest import DIGEST_SYSTEM_PROMPT, build_digest_prompt, parse_digest
 from appstore_mcp.errors import AppNotFoundError, AppStoreMCPError, InvalidInputError
 from appstore_mcp.models import (
     AppError,
     ChartName,
     ChartsResult,
     CompareAppsResult,
+    DigestReviewsResult,
     GetAppResult,
     Meta,
     Review,
@@ -56,6 +65,49 @@ from appstore_mcp.models import (
     SearchAppsResult,
     Source,
 )
+
+
+@dataclass
+class _ReviewCollection:
+    reviews: list[Review]
+    sources: list[Source]
+    warnings: list[str]
+    retrieved_at: datetime
+    fresh: bool
+
+
+def _sampling_fallback_handler() -> Any | None:
+    """Optional server-side sampling fallback for clients without sampling.
+
+    Activated only when the user has set an API key AND installed the matching
+    optional dependency (appstore-mcp[anthropic] / appstore-mcp[openai]).
+    Without both, sampling requests go to the client as usual.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            from fastmcp.client.sampling.handlers.anthropic import (
+                AnthropicSamplingHandler,
+            )
+
+            return AnthropicSamplingHandler(
+                default_model=os.environ.get(
+                    "APPSTORE_MCP_SAMPLING_MODEL", "claude-sonnet-5"
+                )
+            )
+        except ImportError:
+            return None
+    if os.environ.get("OPENAI_API_KEY"):
+        try:
+            from fastmcp.client.sampling.handlers.openai import OpenAISamplingHandler
+
+            return OpenAISamplingHandler(
+                default_model=os.environ.get(
+                    "APPSTORE_MCP_SAMPLING_MODEL", "gpt-4o-mini"
+                )
+            )
+        except ImportError:
+            return None
+    return None
 
 INSTRUCTIONS = """\
 Live public Apple App Store data for competitor research: search, app profiles,
@@ -68,6 +120,10 @@ and ratings/reviews differ per country. Pass `country` (ISO 3166-1 alpha-2)
 explicitly when the user cares about a specific market.
 Fields sourced from the public App Store web page (subtitle, has_iap, privacy)
 are best-effort; when unavailable they are null and meta.warnings explains why.
+For reviews: get_app_store_reviews returns raw reviews; prefer
+digest_app_store_reviews when you want themes/sentiment from many reviews
+without loading them all (uses MCP sampling). get_app_store_screenshots
+returns actual screenshot images for visual analysis.
 """
 
 _COUNTRY_RE = re.compile(r"^[a-zA-Z]{2}$")
@@ -106,7 +162,13 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
     charts = ChartsClient(http, cache)
     reviews_client = ReviewsClient(http, cache)
 
-    mcp: FastMCP = FastMCP(name="appstore-mcp", instructions=INSTRUCTIONS)
+    sampling_handler = _sampling_fallback_handler()
+    mcp: FastMCP = FastMCP(
+        name="appstore-mcp",
+        instructions=INSTRUCTIONS,
+        sampling_handler=sampling_handler,
+        sampling_handler_behavior="fallback",
+    )
 
     @mcp.tool(
         annotations={
@@ -442,14 +504,32 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         """
         ref = parse_app_ref(app_id_or_url)
         resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        collection = await _collect_reviews(
+            ref.app_id, country=resolved_country, sort=sort, limit=limit, ctx=ctx
+        )
+        return ReviewsResult(
+            meta=Meta(
+                country=resolved_country,
+                retrieved_at=collection.retrieved_at,
+                fresh=collection.fresh,
+                warnings=collection.warnings,
+            ),
+            app_id=ref.app_id,
+            reviews=collection.reviews,
+            sources=collection.sources,
+        )
 
+    async def _collect_reviews(
+        app_id: str, *, country: str, sort: ReviewSort, limit: int, ctx: Context
+    ) -> _ReviewCollection:
+        """Shared review harvesting: paginated feed, page fallback on empty."""
         collected: list[Review] = []
         warnings: list[str] = []
         sources: list[Source] = []
         first_entry = None
         for page_number in range(1, MAX_FEED_PAGES + 1):
             entry = await reviews_client.fetch_page(
-                ref.app_id, country=resolved_country, sort=sort, page=page_number
+                app_id, country=country, sort=sort, page=page_number
             )
             # Best-effort estimate: the loop below may break early once `limit`
             # is satisfied, so `MAX_FEED_PAGES` is an upper bound, not a promise.
@@ -463,7 +543,7 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
                 Source(
                     name=reviews_mod.SOURCE_NAME,
                     url=review_feed_url(
-                        ref.app_id, country=resolved_country, sort=sort, page=page_number
+                        app_id, country=country, sort=sort, page=page_number
                     ),
                     retrieved_at=entry.retrieved_at,
                 )
@@ -478,19 +558,17 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
         fresh = first_entry.fresh
         if not collected:
             warnings.append(
-                f"the review feed returned no reviews for app {ref.app_id} in "
-                f"storefront '{resolved_country}'; falling back to the ~24 "
+                f"the review feed returned no reviews for app {app_id} in "
+                f"storefront '{country}'; falling back to the ~24 "
                 f"'most helpful' reviews rendered on the public App Store page"
             )
             try:
-                page_entry = await app_page.fetch_html(
-                    ref.app_id, country=resolved_country
-                )
+                page_entry = await app_page.fetch_html(app_id, country=country)
                 collected = reviews_from_html(page_entry.value)[:limit]
                 sources.append(
                     Source(
                         name=page_mod.SOURCE_NAME,
-                        url=page_mod.page_url(ref.app_id, resolved_country),
+                        url=page_mod.page_url(app_id, country),
                         retrieved_at=page_entry.retrieved_at,
                     )
                 )
@@ -500,19 +578,236 @@ def create_server(http: httpx.AsyncClient | None = None) -> FastMCP:
             except (AppStoreMCPError, PageParseError, ValidationError) as exc:
                 warnings.append(f"page fallback also failed ({exc})")
                 await ctx.warning(
-                    f"review page fallback also failed for app {ref.app_id}: {exc}"
+                    f"review page fallback also failed for app {app_id}: {exc}"
                 )
 
-        return ReviewsResult(
+        return _ReviewCollection(
+            reviews=collected,
+            sources=sources,
+            warnings=warnings,
+            retrieved_at=retrieved_at,
+            fresh=fresh,
+        )
+
+    @mcp.tool(
+        annotations={
+            "title": "Digest App Store reviews",
+            "readOnlyHint": True,
+            "openWorldHint": True,
+        },
+        timeout=120.0,
+    )
+    async def digest_app_store_reviews(
+        app_id_or_url: str,
+        country: str | None = None,
+        limit: Annotated[int, Field(ge=10, le=500)] = 200,
+        sort: ReviewSort = "most_recent",
+        focus: str | None = None,
+        ctx: Context = CurrentContext(),
+    ) -> DigestReviewsResult:
+        """Fetch up to `limit` reviews and compress them into a structured
+        digest (themes, complaints, praise, sentiment) via MCP sampling, so
+        hundreds of reviews never enter your context. Works across storefront
+        languages - the digest is always English. Requires a client that
+        supports MCP sampling (or a server-side API-key fallback); use
+        get_app_store_reviews for the raw reviews instead.
+
+        Args:
+            app_id_or_url: Numeric App Store app ID or a full apps.apple.com
+                URL.
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+                Defaults to the country in the URL if one was passed, else 'us'.
+            limit: Max reviews to digest (10-500).
+            sort: 'most_recent' or 'most_helpful'.
+            focus: Optional steer for the digest, e.g. 'pricing complaints'
+                or 'onboarding friction'.
+        """
+        ref = parse_app_ref(app_id_or_url)
+        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        collection = await _collect_reviews(
+            ref.app_id, country=resolved_country, sort=sort, limit=limit, ctx=ctx
+        )
+        if not collection.reviews:
+            raise AppStoreMCPError(
+                f"No reviews available to digest for app {ref.app_id} in "
+                f"storefront '{resolved_country}'. Try another country or "
+                f"check the app ID with get_app_store_app."
+            )
+
+        prompt = build_digest_prompt(
+            ref.app_id, resolved_country, collection.reviews, focus
+        )
+        try:
+            sampled = await ctx.sample(
+                messages=prompt,
+                system_prompt=DIGEST_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_tokens=2000,
+            )
+        except Exception as exc:
+            raise AppStoreMCPError(
+                f"Review digestion needs LLM sampling, which this MCP client "
+                f"does not support (or it failed: {exc}). Either use "
+                f"get_app_store_reviews to fetch the raw reviews, or run the "
+                f"server with an ANTHROPIC_API_KEY/OPENAI_API_KEY and the "
+                f"matching optional dependency installed to enable the "
+                f"server-side fallback."
+            ) from exc
+
+        warnings = list(collection.warnings)
+        text = sampled.text or ""
+        try:
+            digest = parse_digest(text)
+        except (ValueError, ValidationError) as first_error:
+            retry = await ctx.sample(
+                messages=[
+                    SamplingMessage(
+                        role="user", content=TextContent(type="text", text=prompt)
+                    ),
+                    SamplingMessage(
+                        role="assistant",
+                        content=TextContent(type="text", text=text),
+                    ),
+                    SamplingMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=(
+                                f"That response was invalid ({first_error}). "
+                                f"Reply again with ONLY the corrected JSON object."
+                            ),
+                        ),
+                    ),
+                ],
+                system_prompt=DIGEST_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=2000,
+            )
+            digest = parse_digest(retry.text or "")
+            warnings.append("digest required a retry after invalid LLM output")
+        warnings.append(
+            "digest is LLM-generated from the reviews below; quotes may be "
+            "translated or paraphrased"
+        )
+
+        return DigestReviewsResult(
             meta=Meta(
                 country=resolved_country,
-                retrieved_at=retrieved_at,
-                fresh=fresh,
+                retrieved_at=collection.retrieved_at,
+                fresh=collection.fresh,
                 warnings=warnings,
             ),
             app_id=ref.app_id,
-            reviews=collected,
-            sources=sources,
+            reviews_considered=len(collection.reviews),
+            digest=digest,
+            sources=collection.sources,
+        )
+
+    @mcp.tool(
+        annotations={
+            "title": "Get App Store screenshots",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+        timeout=60.0,
+    )
+    async def get_app_store_screenshots(
+        app_id_or_url: str,
+        country: str | None = None,
+        device: Literal["iphone", "ipad"] = "iphone",
+        limit: Annotated[int, Field(ge=1, le=8)] = 4,
+    ) -> ToolResult:
+        """Fetch an app's App Store screenshots as actual images, so you can
+        analyze visual positioning, onboarding style, and paywall design
+        directly. Returns up to `limit` screenshots as image content blocks.
+
+        Args:
+            app_id_or_url: Numeric App Store app ID or a full apps.apple.com
+                URL.
+            country: ISO 3166-1 alpha-2 storefront code, e.g. 'us', 'de', 'jp'.
+                Defaults to the country in the URL if one was passed, else 'us'.
+            device: Which screenshot set to fetch: 'iphone' or 'ipad'.
+            limit: Max screenshots to return (1-8); each is a full image in
+                context, so keep this small.
+        """
+        ref = parse_app_ref(app_id_or_url)
+        resolved_country = _validate_country(country or ref.country or DEFAULT_COUNTRY)
+        warnings: list[str] = []
+
+        entry = await itunes.lookup([ref.app_id], country=resolved_country)
+        items: list[dict[str, Any]] = entry.value.get("results", [])
+        if not items:
+            raise AppNotFoundError(ref.app_id, resolved_country)
+        key = "screenshotUrls" if device == "iphone" else "ipadScreenshotUrls"
+        urls: list[str] = list(items[0].get(key) or [])
+
+        if not urls:
+            # The lookup API sometimes omits screenshots entirely; the public
+            # page's media shelves carry resizable artwork templates.
+            try:
+                page_entry = await app_page.fetch_html(
+                    ref.app_id, country=resolved_country
+                )
+                urls = screenshot_urls_from_html(page_entry.value, device)
+                warnings.append(
+                    "screenshots sourced from the public App Store page "
+                    "(lookup API returned none)"
+                )
+            except (AppStoreMCPError, PageParseError) as exc:
+                raise AppStoreMCPError(
+                    f"No {device} screenshots available for app {ref.app_id} "
+                    f"in storefront '{resolved_country}' (page fallback "
+                    f"failed: {exc})."
+                ) from exc
+        if not urls:
+            raise AppStoreMCPError(
+                f"App {ref.app_id} has no {device} screenshots in storefront "
+                f"'{resolved_country}'. Try device='ipad' or another country."
+            )
+
+        urls = urls[:limit]
+
+        async def fetch_image(url: str) -> tuple[bytes, str]:
+            response = await http.get(url, follow_redirects=True)
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            fmt = "png" if "png" in content_type or url.endswith(".png") else "jpeg"
+            return response.content, fmt
+
+        downloads = await asyncio.gather(
+            *(fetch_image(url) for url in urls), return_exceptions=True
+        )
+        images = []
+        fetched_urls = []
+        for url, result in zip(urls, downloads):
+            if isinstance(result, BaseException):
+                warnings.append(f"failed to fetch {url}: {result}")
+                continue
+            data, fmt = result
+            images.append(Image(data=data, format=fmt))
+            fetched_urls.append(url)
+        if not images:
+            raise AppStoreMCPError(
+                f"All {len(urls)} screenshot downloads failed for app "
+                f"{ref.app_id}: {'; '.join(warnings)}"
+            )
+
+        header = (
+            f"{len(images)} {device} screenshot(s) for app {ref.app_id} "
+            f"(storefront '{resolved_country}'), in store order:"
+        )
+        return ToolResult(
+            content=[TextContent(type="text", text=header)]
+            + [image.to_image_content() for image in images],
+            structured_content={
+                "app_id": ref.app_id,
+                "country": resolved_country,
+                "device": device,
+                "count": len(images),
+                "urls": fetched_urls,
+                "warnings": warnings,
+            },
         )
 
     @mcp.prompt
