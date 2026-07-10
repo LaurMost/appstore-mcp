@@ -24,9 +24,7 @@ def make_handler(fail_images: str = "none"):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host.endswith("mzstatic.com"):
             seen["images"] += 1
-            if fail_images == "all" or (
-                fail_images == "first" and seen["images"] == 1
-            ):
+            if fail_images == "all" or (fail_images == "first" and seen["images"] == 1):
                 return httpx.Response(500)
             return httpx.Response(
                 200, content=FAKE_JPEG, headers={"content-type": "image/jpeg"}

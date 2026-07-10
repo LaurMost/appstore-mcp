@@ -43,14 +43,11 @@ async def compare_app_store_apps(
 
     if not ordered_ids:
         raise InvalidInputError(
-            "None of the provided values could be parsed as an app ID or "
-            "App Store URL."
+            "None of the provided values could be parsed as an app ID or App Store URL."
         )
 
     entry = await itunes.lookup(ordered_ids, country=country)
-    by_id = {
-        str(item.get("trackId")): item for item in entry.value.get("results", [])
-    }
+    by_id = {str(item.get("trackId")): item for item in entry.value.get("results", [])}
     profiles = []
     for app_id in ordered_ids:
         item = by_id.get(app_id)

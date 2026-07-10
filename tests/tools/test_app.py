@@ -35,9 +35,7 @@ def app_handler(page_status: int = 200) -> Callable[[httpx.Request], httpx.Respo
 async def test_app_merges_page_enrichment() -> None:
     clients = build_clients(app_handler())
     async with clients.http:
-        result = await get_app_store_app(
-            clients.itunes, clients.app_page, "570060128"
-        )
+        result = await get_app_store_app(clients.itunes, clients.app_page, "570060128")
     assert result.app.app_id == "570060128"
     assert result.app.subtitle == "Languages, Math, Music & Chess"
     assert result.app.has_iap is True

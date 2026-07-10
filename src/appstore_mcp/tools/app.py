@@ -98,8 +98,7 @@ async def get_app_store_app(
             enrichment = enrichment_from_html(page_entry.value)
         except (AppStoreMCPError, PageParseError, ValidationError) as exc:
             warnings.append(
-                f"page enrichment failed; subtitle/has_iap/privacy "
-                f"unavailable ({exc})"
+                f"page enrichment failed; subtitle/has_iap/privacy unavailable ({exc})"
             )
             if warner is not None:
                 await warner(

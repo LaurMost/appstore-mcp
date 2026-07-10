@@ -26,7 +26,9 @@ def screenshots_handler(request: httpx.Request) -> httpx.Response:
         results = [r for r in all_results if str(r["trackId"]) in requested]
         return httpx.Response(
             200,
-            content=json.dumps({"resultCount": len(results), "results": results}).encode(),
+            content=json.dumps(
+                {"resultCount": len(results), "results": results}
+            ).encode(),
         )
     return httpx.Response(404)
 
